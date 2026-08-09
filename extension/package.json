@@ -6,6 +6,6 @@
   "license": "MIT",
   "description": "Chrome extension that analyses a Google Photos library locally and helps decide what to delete.",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.js"
   }
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_FILTERS, clusterDuplicates, pickKeepers, evaluate,
-  applyFilters, computeStats
+  applyFilters, computeStats, countPerCriterion, CRITERION_TESTS
 } from '../src/common/filters.js';
 
 /** Build a catalogue item with sane defaults. */
@@ -289,4 +289,114 @@ test('a missing faceMethod is treated as the heuristic', () => {
   const it = item('old', { features: { faceScore: 0.1, skinFrac: 0.4 } });
   const f = filters({ enabled: { noFace: true } });
   assert.equal(evaluate(it, f, new Set()).matched.length, 0);
+});
+
+/* --------------------------------------------------------------- people */
+
+/**
+ * The people criteria depend on the optional backend, so an item may have no
+ * `people` field at all. "Not analysed" must never be read as "nobody in it":
+ * the whole point of the "without" filter is that a user acts on it.
+ */
+function withPeople(id, people, extra = {}) {
+  const it = item(id, extra);
+  if (people !== undefined) it.people = people;
+  return it;
+}
+
+function peopleFilters(enabled, personIds) {
+  return {
+    ...DEFAULT_FILTERS,
+    enabled: { ...DEFAULT_FILTERS.enabled, ...enabled },
+    personIds
+  };
+}
+
+test('"with" matches a photo containing a selected person', () => {
+  const f = peopleFilters({ withPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withPerson(withPeople('a', [1, 2]), f), true);
+});
+
+test('"with" ignores a photo containing only other people', () => {
+  const f = peopleFilters({ withPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withPerson(withPeople('a', [2, 3]), f), false);
+});
+
+test('"with" matches on any one of several selected people', () => {
+  const f = peopleFilters({ withPerson: true }, [1, 4]);
+  assert.equal(CRITERION_TESTS.withPerson(withPeople('a', [4]), f), true);
+});
+
+test('"without" matches a photo of other people only', () => {
+  const f = peopleFilters({ withoutPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withoutPerson(withPeople('a', [2]), f), true);
+});
+
+test('"without" matches a photo the backend found nobody in', () => {
+  const f = peopleFilters({ withoutPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withoutPerson(withPeople('a', []), f), true);
+});
+
+test('"without" never matches a photo the backend has not seen', () => {
+  // The dangerous case: an unanalysed photo offered up for deletion under a
+  // filter the user reads as "definitely not them".
+  const f = peopleFilters({ withoutPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withoutPerson(withPeople('a', undefined), f), false);
+});
+
+test('"with" never matches an unanalysed photo either', () => {
+  const f = peopleFilters({ withPerson: true }, [1]);
+  assert.equal(CRITERION_TESTS.withPerson(withPeople('a', undefined), f), false);
+});
+
+test('neither criterion matches while nobody is selected', () => {
+  // Otherwise ticking "without" alone would offer the entire library.
+  const f = peopleFilters({ withPerson: true, withoutPerson: true }, []);
+  const item = withPeople('a', [1]);
+  assert.equal(CRITERION_TESTS.withPerson(item, f), false);
+  assert.equal(CRITERION_TESTS.withoutPerson(item, f), false);
+});
+
+test('the two people criteria are exclusive on an analysed photo', () => {
+  const f = peopleFilters({}, [1]);
+  for (const people of [[1], [2], []]) {
+    const item = withPeople('a', people);
+    assert.notEqual(
+      CRITERION_TESTS.withPerson(item, f),
+      CRITERION_TESTS.withoutPerson(item, f),
+      `people=${JSON.stringify(people)} matched both or neither`
+    );
+  }
+});
+
+test('a corrupted people field is treated as unanalysed', () => {
+  const f = peopleFilters({ withoutPerson: true }, [1]);
+  for (const bad of [null, 'nobody', 3, {}]) {
+    assert.equal(CRITERION_TESTS.withoutPerson(withPeople('a', bad), f), false);
+  }
+});
+
+test('people criteria drive applyFilters like any other', () => {
+  const f = peopleFilters({ withoutPerson: true }, [1]);
+  const items = [
+    withPeople('keep', [1]),
+    withPeople('offer', [2]),
+    withPeople('unknown', undefined)
+  ];
+  const out = applyFilters(items, f).items.map((i) => i.id);
+  assert.deepEqual(out, ['offer']);
+});
+
+test('the people criteria are counted per criterion like the others', () => {
+  const f = peopleFilters({ withPerson: true }, [1]);
+  const counts = countPerCriterion(
+    [withPeople('a', [1]), withPeople('b', [2]), withPeople('c', undefined)], f
+  );
+  assert.equal(counts.withPerson, 1);
+});
+
+test('personIds defaults to empty so the filters are inert out of the box', () => {
+  assert.deepEqual(DEFAULT_FILTERS.personIds, []);
+  assert.equal(DEFAULT_FILTERS.enabled.withPerson, false);
+  assert.equal(DEFAULT_FILTERS.enabled.withoutPerson, false);
 });

@@ -442,6 +442,11 @@ button.action.wide { width: 100%; }
 
 .filter { border-top: 1px solid var(--line-soft); padding: 11px 0; }
 .filter:first-of-type { border-top: none; padding-top: 2px; }
+/* Dimmed but legible: the criterion has to stay findable, and its reason
+   readable, or the user just wonders why the box will not tick. */
+.filter.disabled > label { opacity: .5; cursor: default; }
+.filter.disabled .hint { color: var(--amber); opacity: .85; }
+.filter.disabled button.action { margin-top: 7px; font-size: 11px; padding: 5px 9px; }
 .filter > label { display: flex; align-items: center; gap: 9px; cursor: pointer; font-weight: 600; }
 .filter > label input { accent-color: var(--amber); width: 15px; height: 15px; margin: 0; flex: 0 0 auto; }
 .filter .icon { flex: 0 0 auto; font-size: 14px; line-height: 1; }
@@ -704,6 +709,105 @@ footer .buttons button { flex: 1; }
 .switch small { color: var(--text-faint); }
 
 .muted { color: var(--text-faint); font-size: 11.5px; line-height: 1.55; }
+.tiny { font-size: 10.5px; margin-top: 5px; }
+
+/* ------------------------------------------------------------- people tab */
+
+.card-title {
+  font: 700 13px/1.2 var(--display);
+  letter-spacing: .02em;
+  margin-bottom: 8px;
+}
+
+.field { display: block; margin-bottom: 8px; }
+.field span {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.field input {
+  width: 100%;
+  box-sizing: border-box;
+  font: 11.5px/1.4 var(--mono);
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+.field input:focus { outline: none; border-color: var(--amber); }
+
+.people {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
+  gap: 9px;
+  margin: 10px 0;
+}
+
+.person {
+  position: relative;
+  background: var(--bg-input);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 7px;
+  transition: border-color .15s, transform .15s;
+}
+.person.on { border-color: var(--amber); transform: translateY(-1px); }
+
+/* Three covers rather than one: a single thumbnail cannot show whether a
+   group has quietly merged two people, which is the mistake that matters. */
+.person .faces { display: flex; gap: 3px; cursor: pointer; }
+.person .faces img {
+  flex: 1 1 0;
+  min-width: 0;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.person .faces .muted { padding: 12px 0; text-align: center; width: 100%; }
+
+.person .name {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  font: 600 12px/1.3 var(--body);
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--line);
+  padding: 2px 0;
+}
+.person .name:focus { outline: none; border-bottom-color: var(--amber); }
+.person .name::placeholder { color: var(--text-faint); font-weight: 400; }
+
+.person .meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+.person .meta .warn { color: var(--amber); font-weight: 700; }
+
+.person .mark {
+  position: absolute;
+  top: 10px; right: 10px;
+  width: 17px; height: 17px;
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 700;
+  color: var(--ink);
+  background: var(--amber);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.person.on .mark { opacity: 1; }
+
 code {
   font: 11px/1.5 var(--mono);
   background: var(--bg-input);

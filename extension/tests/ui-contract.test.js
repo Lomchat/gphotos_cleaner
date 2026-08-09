@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CRITERIA } from '../src/ui/panel.js';
+import { CRITERIA, Panel } from '../src/ui/panel.js';
 import { PANEL_CSS } from '../src/ui/styles.js';
 import { DEFAULT_FILTERS, CRITERION_TESTS, CRITERION_LABELS } from '../src/common/filters.js';
 
@@ -115,10 +115,87 @@ test('every class used by the panel is defined', () => {
     'badge', 'panel', 'modal', 'layout', 'side', 'main', 'grid', 'thumb',
     'score', 'chip', 'reset', 'count', 'stale', 'filter', 'controls',
     'slider', 'banner', 'kpi', 'progress', 'log', 'summary', 'buttons',
-    'hero', 'ring', 'center', 'milestones', 'ms', 'icon', 'mark', 'num'
+    'hero', 'ring', 'center', 'milestones', 'ms', 'icon', 'mark', 'num',
+    'people', 'person', 'faces', 'field', 'card-title', 'tiny'
   ];
   for (const cls of critical) {
     assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),
       `class "${cls}" is used by the panel but missing from the CSS`);
   }
+});
+
+/* ------------------------------------------------------------ people tab */
+
+test('the people criteria are flagged as needing the backend', () => {
+  // The panel greys nothing out on its own: without this flag the hint would
+  // be the only thing telling a user why ticking the box does nothing.
+  for (const key of ['withPerson', 'withoutPerson']) {
+    const crit = CRITERIA.find((c) => c.key === key);
+    assert.ok(crit, `${key} is missing from the UI`);
+    assert.equal(crit.needsBackend, true, `${key} should be flagged needsBackend`);
+  }
+});
+
+test('criteria that need no backend are not flagged', () => {
+  const local = CRITERIA.filter((c) => !c.needsBackend).map((c) => c.key);
+  assert.ok(local.includes('noFace'));
+  assert.ok(local.includes('duplicates'));
+});
+
+test('every criterion needing the backend says so in its hint', () => {
+  for (const crit of CRITERIA.filter((c) => c.needsBackend)) {
+    assert.match(crit.hint, /backend/i, `${crit.key} does not mention the backend`);
+  }
+});
+
+test('a blocked people criterion is never left active in the filters', () => {
+  // The UI renders it unticked; if the state disagrees the predicate keeps
+  // running and photos stay selected under a filter the user cannot see.
+  const filters = {
+    ...DEFAULT_FILTERS,
+    enabled: { ...DEFAULT_FILTERS.enabled, withPerson: true, withoutPerson: true },
+    personIds: [0]
+  };
+  const fake = {
+    state: { filters, settings: { backend: { enabled: false } }, people: { health: null } },
+    backendBlockReason: Panel.prototype.backendBlockReason,
+    syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
+  };
+  fake.syncBlockedCriteria();
+  assert.equal(filters.enabled.withPerson, false);
+  assert.equal(filters.enabled.withoutPerson, false);
+});
+
+test('a usable people criterion is left alone', () => {
+  const filters = {
+    ...DEFAULT_FILTERS,
+    enabled: { ...DEFAULT_FILTERS.enabled, withPerson: true },
+    personIds: [0]
+  };
+  const fake = {
+    state: {
+      filters,
+      settings: { backend: { enabled: true } },
+      people: { health: { authOk: true } }
+    },
+    backendBlockReason: Panel.prototype.backendBlockReason,
+    syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
+  };
+  fake.syncBlockedCriteria();
+  assert.equal(filters.enabled.withPerson, true);
+});
+
+test('criteria that need no backend are untouched by the sync', () => {
+  const filters = {
+    ...DEFAULT_FILTERS,
+    enabled: { ...DEFAULT_FILTERS.enabled, blurry: true },
+    personIds: []
+  };
+  const fake = {
+    state: { filters, settings: { backend: { enabled: false } }, people: { health: null } },
+    backendBlockReason: Panel.prototype.backendBlockReason,
+    syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
+  };
+  fake.syncBlockedCriteria();
+  assert.equal(filters.enabled.blurry, true);
 });

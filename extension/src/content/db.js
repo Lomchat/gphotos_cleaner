@@ -109,6 +109,53 @@ export async function saveFeatures(results) {
   });
 }
 
+/**
+ * Record which people groups each photo belongs to.
+ *
+ * `assignments` maps photo id → array of group ids. Every id passed in is
+ * written, including those mapping to an empty array: "the backend looked and
+ * found nobody" is a different answer from "the backend has not looked", and
+ * the "without" filter depends on being able to tell them apart.
+ */
+export async function savePeople(assignments) {
+  const entries = [...assignments];
+  if (!entries.length) return;
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE_ITEMS, 'readwrite');
+    const store = t.objectStore(STORE_ITEMS);
+    for (const [id, groups] of entries) {
+      const get = store.get(id);
+      get.onsuccess = () => {
+        if (get.result) store.put({ ...get.result, people: groups });
+      };
+    }
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/** Forget every group assignment, without touching the visual analysis. */
+export async function clearPeople() {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE_ITEMS, 'readwrite');
+    const store = t.objectStore(STORE_ITEMS);
+    const cursor = store.openCursor();
+    cursor.onsuccess = () => {
+      const c = cursor.result;
+      if (!c) return;
+      if (c.value.people !== undefined) {
+        const { people, ...rest } = c.value;
+        c.update(rest);
+      }
+      c.continue();
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
 export async function getAll() {
   const store = await tx(STORE_ITEMS, 'readonly');
   return wrap(store.getAll());

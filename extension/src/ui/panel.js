@@ -20,6 +20,8 @@ import {
   countPerCriterion, computeStats, CRITERION_LABELS
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
+import * as backend from '../common/backend.js';
+import { DEFAULT_BACKEND, groupLabel, invertGroups } from '../common/backend.js';
 
 const SETTINGS_KEY = 'gpc:settings';
 const FILTERS_KEY = 'gpc:filters';
@@ -40,7 +42,8 @@ const DEFAULT_SETTINGS = {
   // 0 means no limit.
   maxPerRun: 0,
   analyzeInflight: 3,
-  scanOlderThanTs: null  // only handle items older than this date
+  scanOlderThanTs: null,  // only handle items older than this date
+  backend: { ...DEFAULT_BACKEND }
 };
 
 /**
@@ -162,6 +165,22 @@ export const CRITERIA = [
     label: 'Date range',
     hint: 'Restrict to a date interval.',
     controls: [{ prop: 'dateRange', type: 'daterange' }]
+  },
+  {
+    key: 'withPerson',
+    icon: '👥',
+    label: 'With selected people',
+    hint: 'Needs the optional local backend. Matches photos containing anyone ticked in the People tab.',
+    needsBackend: true,
+    controls: []
+  },
+  {
+    key: 'withoutPerson',
+    icon: '🚫',
+    label: 'Without selected people',
+    hint: 'Needs the optional local backend. Photos it has not looked at yet never match, so "not analysed" is never mistaken for "absent".',
+    needsBackend: true,
+    controls: []
   }
 ];
 
@@ -214,6 +233,7 @@ export class Panel {
       dupStale: false,
       faceModel: null,
       cursor: null,
+      people: { health: null, groups: [], error: null, progress: null, checkedAt: 0 },
       // State shown permanently by the badge, even with the panel closed.
       status: { label: null, ratio: null, tone: null }
     };
@@ -253,7 +273,14 @@ export class Panel {
   async loadPersisted() {
     try {
       const got = await chrome.storage.local.get([SETTINGS_KEY, FILTERS_KEY]);
-      if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
+      if (got[SETTINGS_KEY]) {
+        const stored = migrateSettings(got[SETTINGS_KEY]);
+        Object.assign(this.state.settings, stored);
+        // A settings file written before the backend existed has no such key;
+        // a spread alone would then leave `backend` undefined and every read
+        // of `settings.backend.url` would throw.
+        this.state.settings.backend = { ...DEFAULT_BACKEND, ...(stored.backend || {}) };
+      }
       if (got[FILTERS_KEY]) {
         this.state.filters = {
           ...structuredClone(DEFAULT_FILTERS),
@@ -314,7 +341,8 @@ export class Panel {
 
     this.tabsNav = el('nav', {});
     for (const [key, label] of [
-      ['scan', 'Analyse'], ['sort', 'Sort'], ['stats', 'Stats'], ['settings', 'Settings']
+      ['scan', 'Analyse'], ['sort', 'Sort'], ['people', 'People'],
+      ['stats', 'Stats'], ['settings', 'Settings']
     ]) {
       this.tabsNav.append(
         el('button', {
@@ -329,6 +357,7 @@ export class Panel {
     this.tabs = {
       scan: el('div', { class: 'tab' }),
       sort: el('div', { class: 'tab' }),
+      people: el('div', { class: 'tab' }),
       stats: el('div', { class: 'tab' }),
       settings: el('div', { class: 'tab' })
     };
@@ -588,6 +617,7 @@ export class Panel {
   }
 
   recompute() {
+    this.syncBlockedCriteria();
     const dup = this.duplicateSelection();
     this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
     const r = applyFilters(this.state.items, this.state.filters, dup);
@@ -621,6 +651,7 @@ export class Panel {
 
     this.renderScan();
     this.renderSort();
+    this.renderPeople();
     this.renderStats();
     this.renderSettings();
     this.renderFooter();
@@ -1234,20 +1265,63 @@ export class Panel {
     if (!this.counterEls.has(crit.key)) this.counterEls.set(crit.key, []);
     this.counterEls.get(crit.key).push(counter);
 
+    // A criterion that needs the backend is shown, not hidden: hiding it would
+    // leave no trace of a feature the user may be looking for. It is disabled
+    // with the reason stated, and untickable rather than silently inert.
+    const blocked = crit.needsBackend ? this.backendBlockReason() : null;
+
     return el(
       'div',
-      { class: 'filter' },
+      { class: `filter${blocked ? ' disabled' : ''}` },
       el('label', {},
         el('input', {
-          type: 'checkbox', checked: on,
+          type: 'checkbox', checked: on && !blocked, disabled: !!blocked,
           onchange: (e) => { f.enabled[crit.key] = e.target.checked; this.onFilterChange(); }
         }),
         el('span', { class: 'icon' }, crit.icon || ''),
         crit.label,
         counter),
-      el('div', { class: 'hint' }, crit.hint),
-      controls
+      el('div', { class: 'hint' }, blocked || crit.hint),
+      blocked
+        ? el('button', {
+            class: 'action', text: 'Open the People tab',
+            onclick: () => { this.state.tab = 'people'; this.renderAll(); }
+          })
+        : controls
     );
+  }
+
+  /**
+   * Untick any criterion that has become unusable.
+   *
+   * `buildCriterion` renders a blocked criterion as unticked, but rendering is
+   * not state: without this the box would read "off" while the predicate kept
+   * selecting photos — a filter acting invisibly, right next to the button that
+   * hands a selection to Google Photos. Turning the backend off mid-session is
+   * exactly how that happens.
+   */
+  syncBlockedCriteria() {
+    for (const crit of CRITERIA) {
+      if (!crit.needsBackend) continue;
+      if (this.state.filters.enabled[crit.key] && this.backendBlockReason()) {
+        this.state.filters.enabled[crit.key] = false;
+      }
+    }
+  }
+
+  /**
+   * Why the people criteria cannot be used right now, or null if they can.
+   *
+   * Three distinct answers, because the fix differs each time: turn the backend
+   * on, start it, or pick somebody. One vague "unavailable" would leave the
+   * user guessing at all three.
+   */
+  backendBlockReason() {
+    const cfg = this.state.settings.backend;
+    if (!cfg.enabled) return 'Needs the optional local backend — turn it on in the People tab.';
+    if (!this.state.people.health?.authOk) return 'The backend is not connected. Check it in the People tab.';
+    if (!this.state.filters.personIds.length) return 'Tick at least one person in the People tab first.';
+    return null;
   }
 
   /**
@@ -1361,6 +1435,382 @@ export class Panel {
   }
 
   /* ------------------------------------------------------------ onglet 3 */
+
+  /**
+   * People tab.
+   *
+   * This is the only part of the extension that talks to something outside the
+   * browser, so the tab is built to make that obvious: what the backend is, that
+   * it is optional, and what state it is in right now. Every action degrades to
+   * a message rather than to a broken panel — an unreachable server must never
+   * cost the user a scan they have already waited for.
+   */
+  renderPeople() {
+    const t = this.tabs.people;
+    t.replaceChildren();
+    const cfg = this.state.settings.backend;
+    const p = this.state.people;
+
+    t.append(
+      el('div', { class: 'card' },
+        el('div', { class: 'card-title' }, '👥 Group by person'),
+        el('p', { class: 'muted' },
+          'A thumbnail tells you a face is there, not whose it is. An optional backend running on your machine embeds each face and groups the library by person, so "every photo without Grandma" becomes a filter. Everything stays local.'))
+    );
+
+    /* -------------------------------------------------- connection */
+
+    const enable = el('input', {
+      type: 'checkbox', checked: cfg.enabled,
+      onchange: async (e) => {
+        cfg.enabled = e.target.checked;
+        this.persist();
+        this.renderAll();
+        if (cfg.enabled) await this.checkBackend();
+      }
+    });
+
+    const urlInput = el('input', {
+      type: 'text', value: cfg.url, placeholder: 'http://127.0.0.1:8765',
+      onchange: (e) => { cfg.url = e.target.value.trim(); this.persist(); }
+    });
+    const tokenInput = el('input', {
+      type: 'password', value: cfg.token, placeholder: 'token printed at startup',
+      onchange: (e) => { cfg.token = e.target.value.trim(); this.persist(); }
+    });
+
+    t.append(
+      el('div', { class: 'card' },
+        el('label', { class: 'row' }, enable, el('span', {}, 'Use a local backend')),
+        cfg.enabled
+          ? el('div', { class: 'controls' },
+              el('label', { class: 'field' }, el('span', {}, 'Address'), urlInput),
+              el('label', { class: 'field' }, el('span', {}, 'Token'), tokenInput),
+              el('div', { class: 'buttons' },
+                el('button', {
+                  class: 'action', text: p.progress ? 'Checking…' : 'Test connection',
+                  disabled: !!p.progress,
+                  onclick: () => this.checkBackend()
+                })))
+          : el('p', { class: 'muted' },
+              'Start it with ', el('code', {}, 'python -m backend.app'),
+              ' from the repository, then tick the box. See backend/README.md.'))
+    );
+
+    if (!cfg.enabled) return;
+
+    t.append(this.backendStatusNode());
+    if (!p.health || !p.health.authOk) return;
+
+    /* ----------------------------------------------------- analysis */
+
+    const eligible = this.state.items.filter((i) => i.url && !i.isVideo);
+    const done = this.state.items.filter((i) => Array.isArray(i.people)).length;
+    const busy = this.state.busy === 'people';
+
+    t.append(
+      el('div', { class: 'card' },
+        el('div', { class: 'card-title' }, 'Analyse faces'),
+        el('p', { class: 'muted' },
+          `${nf(eligible.length)} photo(s) with a usable thumbnail. The backend fetches them from Google directly, so only their addresses are sent. Already-analysed photos are skipped.`),
+        p.progress
+          ? el('div', {},
+              el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
+              el('div', { class: 'muted tiny', text: p.progress.label }))
+          : null,
+        el('div', { class: 'buttons' },
+          el('button', {
+            class: 'action primary', disabled: busy || !eligible.length,
+            text: busy ? 'Working…' : (done ? 'Analyse new photos' : 'Analyse faces'),
+            onclick: () => this.runBackendAnalysis()
+          }),
+          el('button', {
+            class: 'action', disabled: busy,
+            text: 'Rebuild groups',
+            title: 'Cluster every face again from scratch',
+            onclick: () => this.runBackendGrouping({ incremental: false })
+          }),
+          el('button', {
+            class: 'action danger', disabled: busy,
+            text: 'Clear backend data',
+            onclick: () => this.clearBackendData()
+          })))
+    );
+
+    /* ------------------------------------------------------- groups */
+
+    if (!p.groups.length) {
+      t.append(el('div', { class: 'banner info' },
+        done
+          ? 'No group yet. A person needs to appear in at least two photos before they can be recognised as one.'
+          : 'Analyse some faces to see people appear here.'));
+      return;
+    }
+
+    const selected = new Set(this.state.filters.personIds);
+    const list = el('div', { class: 'people' });
+
+    for (const group of p.groups) {
+      const on = selected.has(group.id);
+      const covers = (group.cover || [])
+        .map((id) => this.state.items.find((i) => i.id === id))
+        .filter((i) => i && i.url)
+        .slice(0, 3);
+
+      list.append(
+        el('div', { class: `person${on ? ' on' : ''}` },
+          el('div', {
+            class: 'faces',
+            title: on ? 'Click to unselect' : 'Click to select for the people filters',
+            onclick: () => this.togglePerson(group.id)
+          }, covers.length
+            ? covers.map((i) => el('img', { src: i.url, loading: 'lazy', referrerPolicy: 'no-referrer' }))
+            : el('span', { class: 'muted', text: 'no preview' })),
+          el('input', {
+            class: 'name', type: 'text', value: group.name || '',
+            placeholder: groupLabel(group),
+            onchange: (e) => this.renamePerson(group.id, e.target.value.trim())
+          }),
+          el('div', { class: 'meta' },
+            el('span', { text: `${nf(group.size)} face(s)` }),
+            // Spread is the merge signal: a wide group is the one likeliest to
+            // hold two different people, and that is exactly the case where
+            // acting on the filter would delete the wrong person's photos.
+            group.spread > 0.3
+              ? el('span', { class: 'warn', title: `Internal spread ${group.spread}`, text: 'mixed?' })
+              : null),
+          el('span', { class: 'mark', text: on ? '✓' : '' }))
+      );
+    }
+
+    t.append(
+      el('div', { class: 'card' },
+        el('div', { class: 'card-title' }, `People (${nf(p.groups.length)})`),
+        el('p', { class: 'muted' },
+          'Tick the people you care about, then use the "With / Without selected people" criteria in the Sort tab. Names are kept when groups are rebuilt.'),
+        list,
+        el('div', { class: 'buttons' },
+          el('button', {
+            class: 'action', text: 'Clear selection',
+            disabled: !selected.size,
+            onclick: () => { this.state.filters.personIds = []; this.applyPersonFilters(); }
+          }),
+          el('button', {
+            class: 'action', text: 'Go to Sort',
+            onclick: () => { this.state.tab = 'sort'; this.renderAll(); }
+          })))
+    );
+  }
+
+  /** One line saying exactly what the backend is doing, or why it is not. */
+  backendStatusNode() {
+    const p = this.state.people;
+    if (p.error) return el('div', { class: 'banner danger' }, p.error);
+    if (!p.health) {
+      return el('div', { class: 'banner info' },
+        p.progress ? 'Contacting the backend…' : 'Not contacted yet — use "Test connection".');
+    }
+    if (!p.health.authOk) {
+      return el('div', { class: 'banner warn' },
+        'The backend is running but rejected the token. Copy the one it printed at startup (also in backend/data/token).');
+    }
+    const s = p.health.stats || {};
+    return el('div', { class: 'banner info' },
+      `Connected — ${nf(s.photos)} photo(s), ${nf(s.faces)} face(s), ${nf(s.groups)} group(s).`,
+      p.health.modelError ? ` Model problem: ${p.health.modelError}` : '');
+  }
+
+  /* --------------------------------------------------- backend actions */
+
+  async checkBackend() {
+    const p = this.state.people;
+    p.progress = { ratio: 0, label: 'Contacting…' };
+    p.error = null;
+    this.renderAll();
+    try {
+      p.health = await backend.checkHealth(this.state.settings.backend);
+      p.checkedAt = Date.now();
+      if (p.health.authOk) p.groups = await backend.listGroups(this.state.settings.backend);
+    } catch (err) {
+      p.health = null;
+      p.error = `${err.message}. Is "python -m backend.app" running?`;
+    } finally {
+      p.progress = null;
+      this.renderAll();
+    }
+    return p.health;
+  }
+
+  /**
+   * Send every usable thumbnail, then group.
+   *
+   * Progress is reported per batch rather than per photo: a batch is the unit
+   * that actually completes, and pretending to finer granularity would only
+   * invent numbers.
+   */
+  async runBackendAnalysis() {
+    if (this.state.busy) {
+      this.flashStatus('Another run is in progress', 'error', 4000);
+      return;
+    }
+    const cfg = this.state.settings.backend;
+    const p = this.state.people;
+    const items = this.state.items
+      .filter((i) => i.url && !i.isVideo)
+      .map((i) => ({ photoId: i.id, url: i.url }));
+
+    this.state.busy = 'people';
+    p.error = null;
+    p.progress = { ratio: 0, label: `0 / ${nf(items.length)}` };
+    this.renderAll();
+
+    let totals;
+    try {
+      totals = await backend.analyse(cfg, items, {
+        fetchData: (item) => this.thumbAsBase64(item.url),
+        onBatch: ({ done, total }) => {
+          p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)}` };
+          this.renderPeople();
+        }
+      });
+    } catch (err) {
+      p.error = err.message;
+      this.state.busy = null;
+      p.progress = null;
+      this.renderAll();
+      return;
+    }
+
+    if (totals.errors.length) p.error = totals.errors[0];
+    this.state.busy = null;
+    p.progress = null;
+    this.flashStatus(
+      `Backend: ${nf(totals.analysed)} analysed, ${nf(totals.skipped)} already known` +
+      (totals.retried ? `, ${nf(totals.retried)} sent directly` : '')
+    );
+    await this.runBackendGrouping({ incremental: true });
+  }
+
+  async runBackendGrouping({ incremental }) {
+    const cfg = this.state.settings.backend;
+    const p = this.state.people;
+    const wasBusy = this.state.busy;
+    this.state.busy = 'people';
+    p.progress = { ratio: 1, label: 'Grouping…' };
+    this.renderAll();
+
+    try {
+      await backend.group(cfg, { incremental });
+      p.groups = await backend.listGroups(cfg);
+      await this.syncPeopleAssignments();
+      p.health = await backend.checkHealth(cfg);
+    } catch (err) {
+      p.error = err.message;
+    } finally {
+      this.state.busy = wasBusy === 'people' ? null : wasBusy;
+      p.progress = null;
+      this.recompute();
+      this.renderAll();
+    }
+  }
+
+  /**
+   * Pull "who is in which photo" back into the local catalogue.
+   *
+   * The filters run entirely offline over `state.items`, so the answer has to
+   * live there and in IndexedDB — otherwise sorting would need the backend up
+   * on every page load, which defeats the point of it being optional.
+   */
+  async syncPeopleAssignments() {
+    const cfg = this.state.settings.backend;
+    const withPhotos = [];
+    for (const group of this.state.people.groups) {
+      withPhotos.push({ id: group.id, photoIds: await backend.groupPhotos(cfg, group.id) });
+    }
+    const byPhoto = invertGroups(withPhotos);
+
+    // Photos the backend knows about but placed in no group must be recorded
+    // as an explicit empty list: that is what makes "without" trustworthy.
+    const analysed = await backend.known(cfg, this.state.items.map((i) => i.id));
+    const assignments = new Map();
+    for (const id of analysed) assignments.set(id, byPhoto.get(id) || []);
+
+    for (const item of this.state.items) {
+      if (assignments.has(item.id)) item.people = assignments.get(item.id);
+    }
+    await db.savePeople(assignments);
+  }
+
+  /**
+   * Read a thumbnail in the page and return it as base64.
+   *
+   * Used only when the backend could not fetch the URL itself. The page has the
+   * session and the cache, so this succeeds where a bare server-side GET does
+   * not — at the cost of moving the bytes twice, which is why it is a fallback
+   * and not the default path.
+   */
+  async thumbAsBase64(url) {
+    if (!url) return null;
+    const response = await fetch(url, { credentials: 'include', referrerPolicy: 'no-referrer' });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (blob.size > 8 * 1024 * 1024) return null;
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  togglePerson(groupId) {
+    const ids = this.state.filters.personIds;
+    const at = ids.indexOf(groupId);
+    if (at >= 0) ids.splice(at, 1);
+    else ids.push(groupId);
+    this.applyPersonFilters();
+  }
+
+  applyPersonFilters() {
+    this.dupCache = null;
+    this.recompute();
+    this.persist();
+    this.renderAll();
+  }
+
+  async renamePerson(groupId, name) {
+    try {
+      await backend.renameGroup(this.state.settings.backend, groupId, name || null);
+      const group = this.state.people.groups.find((g) => g.id === groupId);
+      if (group) group.name = name || null;
+    } catch (err) {
+      this.state.people.error = err.message;
+    }
+    this.renderAll();
+  }
+
+  async clearBackendData() {
+    const cfg = this.state.settings.backend;
+    this.state.busy = 'people';
+    this.renderAll();
+    try {
+      await backend.clearBackend(cfg);
+      await db.clearPeople();
+      for (const item of this.state.items) delete item.people;
+      this.state.people.groups = [];
+      this.state.filters.personIds = [];
+      this.state.people.health = await backend.checkHealth(cfg);
+      this.flashStatus('Backend data cleared');
+    } catch (err) {
+      this.state.people.error = err.message;
+    } finally {
+      this.state.busy = null;
+      this.recompute();
+      this.renderAll();
+    }
+  }
+
+  /* ------------------------------------------------------------ onglet 4 */
 
   renderStats() {
     const t = this.tabs.stats;
@@ -1548,8 +1998,9 @@ export class Panel {
       return;
     }
 
-    this.state.settings = { ...DEFAULT_SETTINGS };
+    this.state.settings = { ...DEFAULT_SETTINGS, backend: { ...DEFAULT_BACKEND } };
     this.state.filters = structuredClone(DEFAULT_FILTERS);
+    this.state.people = { health: null, groups: [], error: null, progress: null, checkedAt: 0 };
     this.state.selection = new Set();
     this.state.renderLimit = 120;
     this.state.tab = 'scan';

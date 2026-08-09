@@ -12,6 +12,11 @@ own UI, with its own counter and confirmation.
 No account access, no API keys, no server, no build step. A real face-detection
 model runs in your browser; nothing is uploaded anywhere.
 
+An **optional local backend** adds the one thing a thumbnail cannot give you:
+*whose* face it is. It groups your library by person, so *"every photo without
+Grandma in it"* becomes a filter. It runs on `127.0.0.1`; nothing leaves the
+machine either way. See [backend/README.md](backend/README.md).
+
 ---
 
 ## Repository layout
@@ -22,6 +27,11 @@ extension/     the Chrome extension — works entirely on its own
   vendor/      onnxruntime-web + the face model, both MIT, both committed
   tests/       Node test runner, no dependencies
 backend/       optional local service for grouping photos by person
+  app.py       FastAPI on 127.0.0.1
+  faces.py     detection + ArcFace identity embeddings
+  cluster.py   DBSCAN grouping, pure and tested on its own
+  store.py     SQLite
+  tests/       pytest
 ```
 
 One repository rather than two: the extension and the backend share an API
@@ -65,6 +75,12 @@ gives a wide grid with the criteria in a left column.
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
+**People** *(optional).* With the backend running, this tab analyses faces,
+groups them by person, and lets you name each group. Ticking people there turns
+on the **With / Without selected people** criteria in Sort. Without the backend
+the tab explains what it would do and the two criteria stay disabled, with the
+reason stated on each.
+
 ---
 
 ## What it detects
@@ -80,6 +96,7 @@ All measurements are taken on the thumbnail, not the original file.
 | **Screenshots** | Axis-aligned gradient energy, flat areas, small palette, screen aspect ratio, status bar | Fair |
 | **Documents** | Light desaturated background, bimodal histogram, text-line detection | Fair |
 | **Long videos** | Duration read from the tile | Good (duration stands in for file size, which Google does not expose) |
+| **A given person** | ArcFace embeddings + DBSCAN, optional local backend | Good — measured separation margin +0.53 between same and different people |
 
 ### People detection
 
@@ -136,8 +153,15 @@ content.js ──▶ panel.js ──▶ scanner.js ──▶ dom-adapter.js ─�
                   │                                        (8–16)          (2–6)
                   │                                     features.js   face-worker.js
                   │
-                  └──▶ actions.js ──▶ dom-adapter.js ──▶ [ticking only]
+                  ├──▶ actions.js ──▶ dom-adapter.js ──▶ [ticking only]
+                  │
+                  └──▶ backend.js ─ ─ ▶ 127.0.0.1:8765  (optional)
+                                          │
+                                    faces.py → cluster.py → store.py
 ```
+
+Dashes on that last arrow are the point: it is the only edge that leaves the
+browser, and cutting it costs the people criteria and nothing else.
 
 | File | Role |
 |---|---|
@@ -149,9 +173,24 @@ content.js ──▶ panel.js ──▶ scanner.js ──▶ dom-adapter.js ─�
 | `src/analysis/face-postprocess.js` | Model output decoding, pure and tested |
 | `src/analysis/face-pool.js` / `face-worker.js` | Neural detection |
 | `src/common/filters.js` | Predicates, duplicate grouping, statistics |
+| `src/common/backend.js` | Optional backend client, pure and tested |
 | `src/ui/panel.js` | Interface, inside a Shadow DOM |
 
 ### Design decisions worth knowing
+
+**The backend is an accelerator, never a dependency.** Every path through
+`backend.js` degrades to "no people data" rather than to a broken panel: a
+server that is not started, a wrong token, one stopped halfway through a run.
+A failed request must never cost a scan the user has already paid for in time.
+Group assignments are copied back into IndexedDB, so sorting by person keeps
+working after the server is switched off.
+
+**"Not analysed" is never "nobody in it".** A photo the backend has not seen has
+no `people` field, and the *Without selected people* predicate refuses to match
+it. Treating the two alike would offer up every unreached photo under a filter
+the user reads as "definitely without them" — and the criterion is also
+force-unticked the moment the backend becomes unusable, so a box showing "off"
+can never still be filtering.
 
 **The extension cannot delete.** An earlier version could: it found the "Move to
 bin" button, handled the confirmation dialog, batched the work, verified a
@@ -254,7 +293,10 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 192 tests, no external dependencies
+npm test                          # 256 tests, no external dependencies
+
+cd ..
+python -m pytest backend/tests -q  # 128 tests (11 skip without the large model)
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
@@ -280,6 +322,12 @@ and runtime actually work under the extension's CSP.
 | `extension/vendor/onnxruntime/` | onnxruntime-web 1.27 (WASM backend) | MIT |
 | `extension/vendor/models/ultraface-rfb320.onnx` | UltraFace RFB-320 | MIT |
 
+The backend loads that same detector file rather than a copy of it: a backend
+that quietly drifted to a different detector would disagree with the panel about
+which photos contain a face, and nothing would say so. Its 166 MB ArcFace model
+is too large to commit and is downloaded once, on purpose, by an explicit
+command.
+
 Committed rather than fetched: the extension must install with "Load unpacked"
 and no build step, and a model downloaded at runtime would break the promise that
 nothing leaves the browser.
@@ -292,6 +340,12 @@ No data leaves the browser. Thumbnails are downloaded from Google's servers —
 exactly as the page itself would — analysed in memory, and the model runs
 locally. The catalogue stays in IndexedDB on the photos.google.com origin. No
 third-party requests, no telemetry.
+
+With the backend enabled, thumbnail *addresses* are sent to `127.0.0.1` and it
+fetches them from Google itself; when Google refuses that, the extension sends
+the bytes instead. Faces and embeddings live in `backend/data/cleaner.db` —
+delete it with `rm -r backend/data`. The server binds to loopback only, requires
+a token, and refuses to fetch any host that is not a Google photo CDN.
 
 The **↺** button in the panel header resets the extension to a fresh-install
 state immediately, with no confirmation. It is inert during a run.
@@ -307,6 +361,11 @@ state immediately, with no confirmation. It is inert during a run.
   suite. Small faces in wide scenes are the likeliest misses.
 - Shared albums and archived items are only seen if the current view shows them.
 - Ticking several thousand items slows the Google Photos interface down.
+- Person grouping has no landmark alignment, which inflates same-person
+  distances. They stay half a unit clear of different-person distances on the
+  labelled set, but a group flagged **mixed?** in the panel deserves a look
+  before you act on it.
+- The ArcFace weights are licensed for non-commercial research use.
 - Automating a web interface sits in a grey area of Google's terms of service.
   The extension acts only on your own account and uses no private API — but the
   responsibility is yours.

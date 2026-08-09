@@ -17,7 +17,9 @@ export const DEFAULT_FILTERS = {
     bright: false,
     duplicates: false,
     longVideo: false,
-    dateRange: false
+    dateRange: false,
+    withPerson: false,
+    withoutPerson: false
   },
   noFaceMax: 0.35,      // presence score at or below this…
   noFaceMaxSkin: 0.05,  // …AND skin area at or below this ⇒ "no people"
@@ -33,6 +35,7 @@ export const DEFAULT_FILTERS = {
   longVideoSec: 120,
   from: null,
   to: null,
+  personIds: [],        // groups selected in the People tab
   mode: 'any'           // 'any' = union of criteria, 'all' = intersection
 };
 
@@ -178,7 +181,19 @@ export const CRITERION_TESTS = {
   longVideo: (it, f) => !!it.isVideo && (it.duration ?? 0) >= f.longVideoSec,
   dateRange: (it, f) =>
     (f.from == null || (it.ts != null && it.ts >= f.from)) &&
-    (f.to == null || (it.ts != null && it.ts <= f.to))
+    (f.to == null || (it.ts != null && it.ts <= f.to)),
+
+  // People criteria need the optional backend. `it.people` is an array only
+  // once the backend has looked at that photo; undefined means "not analysed",
+  // which is emphatically not the same as "nobody in it". Treating the two
+  // alike would offer up every photo the backend has not reached yet under a
+  // filter the user reads as "definitely without them".
+  withPerson: (it, f) =>
+    Array.isArray(it.people) && f.personIds.length > 0 &&
+    it.people.some((g) => f.personIds.includes(g)),
+  withoutPerson: (it, f) =>
+    Array.isArray(it.people) && f.personIds.length > 0 &&
+    !it.people.some((g) => f.personIds.includes(g))
 };
 
 export const CRITERION_KEYS = Object.keys(CRITERION_TESTS);
@@ -332,5 +347,7 @@ export const CRITERION_LABELS = {
   bright: 'Overexposed',
   duplicates: 'Duplicate',
   longVideo: 'Long video',
-  dateRange: 'Date range'
+  dateRange: 'Date range',
+  withPerson: 'With selected people',
+  withoutPerson: 'Without selected people'
 };
