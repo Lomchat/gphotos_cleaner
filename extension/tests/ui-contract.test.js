@@ -1,0 +1,124 @@
+/**
+ * Internal interface contracts.
+ *
+ * Nothing checks these links at runtime: a slider bound to a non-existent
+ * setting yields `undefined`, the filter then lets everything through, and
+ * nothing says so. A "reset to default" button with no default resets to
+ * `undefined` too. These errors are silent and dangerous, because they end up
+ * in front of a selection button.
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { CRITERIA } from '../src/ui/panel.js';
+import { PANEL_CSS } from '../src/ui/styles.js';
+import { DEFAULT_FILTERS, CRITERION_TESTS, CRITERION_LABELS } from '../src/common/filters.js';
+
+/* ------------------------------------------------------ criteria <-> filters */
+
+test('every UI criterion has a matching predicate', () => {
+  for (const crit of CRITERIA) {
+    assert.ok(CRITERION_TESTS[crit.key], `"${crit.key}" has no predicate`);
+    assert.ok(CRITERION_LABELS[crit.key], `"${crit.key}" has no label`);
+    assert.equal(typeof DEFAULT_FILTERS.enabled[crit.key], 'boolean',
+      `"${crit.key}" has no default enabled state`);
+  }
+});
+
+test('no predicate is orphaned from the UI', () => {
+  // A filterable but undisplayed criterion would be unreachable.
+  const exposes = new Set(CRITERIA.map((c) => c.key));
+  for (const key of Object.keys(CRITERION_TESTS)) {
+    assert.ok(exposes.has(key), `predicate "${key}" is exposed nowhere`);
+  }
+});
+
+test('every slider drives a setting that really exists', () => {
+  // Without this guarantee `filters[prop]` is `undefined`, and the predicate
+  // comparison silently becomes always false (or always true).
+  for (const crit of CRITERIA) {
+    for (const c of crit.controls || []) {
+      if (c.type === 'daterange') {
+        assert.ok('from' in DEFAULT_FILTERS && 'to' in DEFAULT_FILTERS);
+        continue;
+      }
+      assert.ok(c.prop, `a control of "${crit.key}" has no property`);
+      assert.ok(c.prop in DEFAULT_FILTERS,
+        `"${c.prop}" (criterion ${crit.key}) is missing from DEFAULT_FILTERS`);
+      assert.notEqual(DEFAULT_FILTERS[c.prop], undefined,
+        `"${c.prop}" has no default: the reset button would do nothing`);
+    }
+  }
+});
+
+test('slider bounds contain their default value', () => {
+  // An out-of-range default is silently clamped by the browser, so the reset
+  // button would never return to it.
+  for (const crit of CRITERIA) {
+    for (const c of crit.controls || []) {
+      if (c.type === 'select' || c.type === 'daterange') continue;
+      const v = DEFAULT_FILTERS[c.prop];
+      assert.ok(typeof v === 'number', `${c.prop} should be numeric`);
+      assert.ok(v >= c.min && v <= c.max,
+        `${c.prop} = ${v} is outside [${c.min}, ${c.max}]`);
+    }
+  }
+});
+
+test('dropdowns offer their default value', () => {
+  for (const crit of CRITERIA) {
+    for (const c of crit.controls || []) {
+      if (c.type !== 'select') continue;
+      const values = c.options.map(([v]) => v);
+      assert.ok(values.includes(DEFAULT_FILTERS[c.prop]),
+        `${c.prop}: the default "${DEFAULT_FILTERS[c.prop]}" is not offered`);
+    }
+  }
+});
+
+test('every criterion carries an explanation and an icon', () => {
+  const icons = new Set();
+  for (const crit of CRITERIA) {
+    assert.ok(crit.label && crit.label.length > 2, `${crit.key} has no label`);
+    assert.ok(crit.hint && crit.hint.length > 20,
+      `${crit.key} has no explanation: the user must be able to judge before ticking`);
+    assert.ok(crit.icon, `${crit.key} has no icon`);
+    // Two criteria sharing an icon blur together at a glance, which cancels the
+    // whole benefit of having icons.
+    assert.equal(icons.has(crit.icon), false, `icon ${crit.icon} already used`);
+    icons.add(crit.icon);
+  }
+});
+
+/* -------------------------------------------------------------- stylesheet */
+
+test('the stylesheet contains no backtick', () => {
+  // It lives in a template literal: a backtick ends the string and breaks the
+  // whole file, and therefore the whole panel.
+  assert.equal(PANEL_CSS.includes('`'), false,
+    'a backtick in the CSS would end the template literal');
+});
+
+test('the stylesheet is syntactically balanced', () => {
+  const opening = (PANEL_CSS.match(/\{/g) || []).length;
+  const closing = (PANEL_CSS.match(/\}/g) || []).length;
+  assert.equal(opening, closing, 'unbalanced braces');
+  assert.equal((PANEL_CSS.match(/\/\*/g) || []).length,
+    (PANEL_CSS.match(/\*\//g) || []).length, 'unclosed comment');
+});
+
+test('every class used by the panel is defined', () => {
+  // A class set by the JS but absent from the CSS yields an invisible or
+  // misplaced element, with no error at all.
+  const critical = [
+    'badge', 'panel', 'modal', 'layout', 'side', 'main', 'grid', 'thumb',
+    'score', 'chip', 'reset', 'count', 'stale', 'filter', 'controls',
+    'slider', 'banner', 'kpi', 'progress', 'log', 'summary', 'buttons',
+    'hero', 'ring', 'center', 'milestones', 'ms', 'icon', 'mark', 'num'
+  ];
+  for (const cls of critical) {
+    assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),
+      `class "${cls}" is used by the panel but missing from the CSS`);
+  }
+});

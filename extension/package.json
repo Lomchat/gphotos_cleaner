@@ -1,0 +1,11 @@
+{
+  "name": "photo-cleaner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Chrome extension that analyses a Google Photos library locally and helps decide what to delete.",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}
