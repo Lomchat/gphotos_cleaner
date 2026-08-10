@@ -56,7 +56,7 @@
       if (toggleRequested) panel.toggle(true);
     } catch (err) {
       loadError = err;
-      console.error('[Photo Cleaner] failed to load:', err);
+      console.error('[GPhotos Cleaner] failed to load:', err);
       showLoadError(err);
     }
   }
@@ -98,7 +98,7 @@
   function showBootNotice() {
     const box = notice();
     box.className = 'box';
-    box.textContent = 'Photo Cleaner: starting…';
+    box.textContent = 'GPhotos Cleaner: starting…';
   }
 
   function showLoadError(err) {
@@ -106,7 +106,7 @@
     box.className = 'box error';
     box.replaceChildren();
     const title = document.createElement('b');
-    title.textContent = 'Photo Cleaner could not start';
+    title.textContent = 'GPhotos Cleaner could not start';
     const detail = document.createElement('code');
     detail.textContent = String(err?.message || err);
     box.append(title, detail);

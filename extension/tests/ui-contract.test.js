@@ -227,3 +227,61 @@ test('optional blocks never print the word "null"', () => {
   assert.equal(direct.length, 0,
     `${direct.length} bare .append( call(s) remain; use put(target, ...) so absent blocks stay silent`);
 });
+
+test('the panel asks whether the model is already downloaded when it starts', () => {
+  // Whether the model exists lives in the offscreen document's storage, not in
+  // the panel's. Without this call `modelReady` stays false on every load and a
+  // model fetched yesterday is offered for download again — which is exactly
+  // what happened.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const mount = source.slice(source.indexOf('async mount()'), source.indexOf('async loadPersisted'));
+  assert.match(mount, /refreshPeopleState\(\)/,
+    'mount() must refresh the recognition-model state');
+});
+
+/** The body of one method, from its declaration to the start of the next one. */
+function methodBody(source, name) {
+  const decl = '\n  ' + name + '(';
+  const start = source.indexOf(decl);
+  assert.notEqual(start, -1, `${name} not found`);
+  const rest = source.slice(start + decl.length);
+  const end = rest.search(/\n {2}(?:\/\*\*|(?:async )?[a-zA-Z_$][\w$]*\()/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+test('nothing in the People tab starts a run', () => {
+  // Reading photos belongs with the analysis that feeds it, in one place, so
+  // there is never a second pass to remember.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const tab = methodBody(source, 'renderPeople');
+  assert.equal(/runPeopleScan\(/.test(tab), false,
+    'the face pass is started from the Analyse tab, not from People');
+  assert.equal(/downloadRecognitionModel\(/.test(tab), false,
+    'the model download lives in the Analyse tab');
+});
+
+test('the Analyse tab is where the model and the face pass are offered', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const block = methodBody(source, 'buildPeopleOption');
+  assert.match(block, /downloadRecognitionModel\(/,
+    'the download button belongs in the Analyse tab');
+  assert.match(block, /runPeopleScan\(/,
+    'so does the catch-up button for photos analysed before it was switched on');
+});
+
+test('every method the panel calls on itself exists', () => {
+  // A doc comment missing its closing marker swallows the method below it and
+  // the file still parses cleanly — the failure only shows up as a TypeError
+  // in the browser, at render time, with the panel already half-drawn.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const called = new Set([...source.matchAll(/this\.([a-zA-Z_$][\w$]*)\(/g)].map((m) => m[1]));
+  const missing = [...called].filter((name) => typeof Panel.prototype[name] !== 'function');
+  assert.deepEqual(missing, [], `called but not defined: ${missing.join(', ')}`);
+});
+
+test('no doc comment is left unclosed', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const opened = (source.match(/\/\*/g) || []).length;
+  const closed = (source.match(/\*\//g) || []).length;
+  assert.equal(opened, closed, 'an unclosed comment hides everything after it');
+});

@@ -1,4 +1,4 @@
-# Photo Cleaner for Google Photos
+# GPhotos Cleaner
 
 A Chrome extension that analyses your Google Photos library **locally** and helps
 you decide what to delete: photos with no people, screenshots, documents, blurry
@@ -88,14 +88,19 @@ flips into the selection.
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
-**People** *(optional).* Enable **Also group photos by person** in the Analyse
-tab and each run additionally re-reads photos containing a face at a larger
-size, turns each face into an identity vector and groups them. The People tab is
-where you name the groups; a name follows its person across rebuilds. Ticking
-people there turns on the **With / Without selected people** criteria in Sort.
+**People** *(optional).* Everything that *runs* lives in the Analyse tab: the
+one-time model download, the **Also group photos by person** switch, and a
+catch-up button for photos measured before you turned it on. With the switch on,
+each run additionally re-reads photos containing a face at a larger size, turns
+each face into an identity vector and groups them.
 
-It needs a 13 MB model, downloaded once on an explicit click in the Analyse tab.
-Nothing else in the extension depends on it.
+The People tab is where you *look*: name the groups, and tick the ones you care
+about to turn on the **With / Without selected people** criteria in Sort. A name
+follows its person across rebuilds. Nothing there starts a job — a second pass
+you have to remember to launch is a second pass that never runs.
+
+It needs a 13 MB model, downloaded once on an explicit click. Nothing else in
+the extension depends on it.
 
 ---
 
@@ -333,7 +338,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 326 tests, no external dependencies
+npm test        # 331 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

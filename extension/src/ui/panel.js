@@ -293,6 +293,10 @@ export class Panel {
     this.watchShift();
     this.build();
     await this.reload();
+    // Whether the model is already downloaded lives in the offscreen document's
+    // storage, not in ours. Without asking, `modelReady` stays false on every
+    // load and a model fetched yesterday is offered for download again.
+    await this.refreshPeopleState();
     this.renderAll();
   }
 
@@ -332,7 +336,7 @@ export class Panel {
       'button',
       {
         class: 'badge',
-        title: 'Photo Cleaner — open panel',
+        title: 'GPhotos Cleaner — open panel',
         onclick: () => this.toggle()
       },
       this.badgeGlyph,
@@ -354,7 +358,7 @@ export class Panel {
         'header',
         {},
         el('h1', {},
-          el('span', { class: 'mark' }, 'Photo'), 'Cleaner',
+          el('span', { class: 'mark' }, 'GPhotos'), 'Cleaner',
           this.headerSub),
         this.headerReset,
         el('button', {
@@ -635,8 +639,8 @@ export class Panel {
     // it during a run would remove the only activity indicator available when
     // the panel is shut.
     this.badge.title = show
-      ? 'Photo Cleaner — close panel'
-      : 'Photo Cleaner — open panel';
+      ? 'GPhotos Cleaner — close panel'
+      : 'GPhotos Cleaner — open panel';
     if (show) this.renderAll();
     else this.renderBadge();
   }
@@ -1281,6 +1285,11 @@ export class Panel {
     const s = this.state.settings;
     const p = this.state.people;
     const busy = !!this.state.busy;
+    const bar = p.progress
+      ? el('div', {},
+          el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
+          el('div', { class: 'muted tiny', text: p.progress.label }))
+      : null;
 
     if (!p.modelReady) {
       return el('div', { class: 'card', style: 'margin-top:10px' },
@@ -1290,11 +1299,7 @@ export class Panel {
         el('div', { class: 'muted', style: 'margin-top:6px' },
           'Needs a ', el('b', {}, '13 MB'),
           ' recognition model — downloaded once, then kept in your browser. Not bundled: its weights are licensed for non-commercial research use and this extension is MIT.'),
-        p.progress && p.downloading
-          ? el('div', {},
-              el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
-              el('div', { class: 'muted tiny', text: p.progress.label }))
-          : null,
+        bar,
         p.error ? el('div', { class: 'banner danger' }, p.error) : null,
         el('button', {
           class: 'action', style: 'margin-top:8px',
@@ -1304,6 +1309,12 @@ export class Panel {
         }));
     }
 
+    // Photos analysed before the switch was turned on, or before the model
+    // existed, would otherwise wait for a run that never comes: the main
+    // analysis skips what it has already measured, so it would never revisit
+    // them. This catches them up without re-analysing anything else.
+    const todo = pendingPeople(this.state.items);
+
     return el('div', { style: 'margin-top:10px' },
       el('label', { class: 'switch' },
         el('input', {
@@ -1311,7 +1322,21 @@ export class Panel {
           onchange: (e) => { s.scanPeople = e.target.checked; this.persist(); this.renderAll(); }
         }),
         el('span', {}, 'Also group photos by person'),
-        el('small', {}, 'adds a second read of photos containing a face')));
+        el('small', {}, 'reads photos containing a face a second time, at ' + PEOPLE_RENDER_PX + 'px')),
+      bar,
+      p.error ? el('div', { class: 'banner danger' }, p.error) : null,
+      todo.length
+        ? el('button', {
+            class: 'action', style: 'margin-top:8px',
+            disabled: busy,
+            text: `Read faces in ${nf(todo.length)} already-analysed photo(s)`,
+            title: 'Catch up photos measured before this was switched on',
+            onclick: () => this.runPeopleScan()
+          })
+        : el('div', { class: 'muted tiny', style: 'margin-top:6px' },
+            p.faceCount
+              ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Manage them in the People tab.`
+              : 'Every analysed photo with a face has been read.'));
   }
 
   /**
@@ -1629,59 +1654,17 @@ export class Panel {
           ' — identity needs pixels a thumbnail does not carry — then grouped by person, so "every photo without Grandma" becomes a filter. Everything runs in your browser.'))
     );
 
-    if (!p.modelReady) {
-      t.append(this.modelSetupNode());
-      return;
-    }
-
-    /* ----------------------------------------------------- the pass */
-
-    const todo = pendingPeople(this.state.items);
-    const eligible = peopleCandidates(this.state.items);
-    const scanned = eligible.length - todo.length;
-
-    put(
-
-      t,
-      el('div', { class: 'card' },
-        el('div', { class: 'card-title' }, 'Find faces'),
-        el('p', { class: 'muted' },
-          eligible.length
-            ? `${nf(scanned)} of ${nf(eligible.length)} photo(s) with a face have been read. Only those are re-fetched — a landscape has no identity to find.`
-            : 'No photo with a detected face yet. Run the Analyse tab first.'),
-        p.progress
-          ? el('div', {},
-              el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
-              el('div', { class: 'muted tiny', text: p.progress.label }))
-          : null,
-        p.error ? el('div', { class: 'banner danger' }, p.error) : null,
-        el('div', { class: 'buttons' },
-          el('button', {
-            class: 'action primary', disabled: busy || !todo.length,
-            text: busy ? 'Working…' : (todo.length ? `Read ${nf(todo.length)} photo(s)` : 'All read'),
-            onclick: () => this.runPeopleScan()
-          }),
-          el('button', {
-            class: 'action', disabled: busy || !p.faceCount,
-            text: 'Rebuild groups',
-            title: 'Group every face again from scratch',
-            onclick: () => this.rebuildGroups()
-          }),
-          el('button', {
-            class: 'action danger', disabled: busy || !p.faceCount,
-            text: 'Clear',
-            title: 'Forget every face and group; the model stays downloaded',
-            onclick: () => this.clearPeopleData()
-          })))
-    );
-
     /* --------------------------------------------------------- groups */
 
     if (!p.groups.length) {
+      // Nothing here starts work. Reading photos belongs with the analysis that
+      // feeds it, in one place, so there is never a second run to remember.
       t.append(el('div', { class: 'banner info' },
-        p.faceCount
-          ? `${nf(p.faceCount)} face(s) found, no group yet. Someone has to appear in at least two photos to be recognised as a person.`
-          : 'Read some photos to see people appear here.'));
+        !p.modelReady
+          ? 'Turn on "Also group photos by person" in the Analyse tab, then run the analysis.'
+          : p.faceCount
+            ? `${nf(p.faceCount)} face(s) found, no group yet. Someone has to appear in at least two photos to be recognised as a person.`
+            : 'Run the analysis with "group by person" on to see people here.'));
       return;
     }
 
@@ -1729,6 +1712,7 @@ export class Panel {
         el('p', { class: 'muted' },
           'Tick the people you care about, then use the "With / Without selected people" criteria in Sort. Names are kept when groups are rebuilt.'),
         list,
+        p.error ? el('div', { class: 'banner danger' }, p.error) : null,
         el('div', { class: 'buttons' },
           el('button', {
             class: 'action', text: 'Clear selection', disabled: !selected.size,
@@ -1737,39 +1721,21 @@ export class Panel {
           el('button', {
             class: 'action', text: 'Go to Sort',
             onclick: () => { this.state.tab = 'sort'; this.renderAll(); }
+          })),
+        el('div', { class: 'buttons', style: 'margin-top:8px' },
+          el('button', {
+            class: 'action', disabled: busy,
+            text: 'Rebuild groups',
+            title: 'Group every known face again from scratch',
+            onclick: () => this.rebuildGroups()
+          }),
+          el('button', {
+            class: 'action danger', disabled: busy,
+            text: 'Forget faces',
+            title: 'Drop every face and group; the model stays downloaded',
+            onclick: () => this.clearPeopleData()
           })))
     );
-  }
-
-  /**
-   * The one-time model download.
-   *
-   * Stated rather than hidden: it is the only thing this extension ever fetches
-   * that is not a photo, and its licence is not the repository's.
-   */
-  modelSetupNode() {
-    const p = this.state.people;
-    const busy = this.state.busy === 'people';
-
-    return el('div', { class: 'card' },
-      el('div', { class: 'card-title' }, 'One-time setup'),
-      el('p', { class: 'muted' },
-        'Recognising people needs a ', el('b', {}, '13 MB'),
-        ' model. It is not bundled: its weights are licensed for non-commercial research use, and this extension is MIT. Downloaded once from Hugging Face, then kept in your browser. No photo is involved.'),
-      p.progress
-        ? el('div', {},
-            el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
-            el('div', { class: 'muted tiny', text: p.progress.label }))
-        : null,
-      p.error ? el('div', { class: 'banner danger' }, p.error) : null,
-      el('div', { class: 'buttons' },
-        el('button', {
-          class: 'action primary', disabled: busy,
-          text: busy ? 'Downloading…' : 'Download the model',
-          onclick: () => this.downloadRecognitionModel()
-        })),
-      el('p', { class: 'muted tiny' },
-        'Everything else in this extension works without it.'));
   }
 
   /* ---------------------------------------------------- people actions */

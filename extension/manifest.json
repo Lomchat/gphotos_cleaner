@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Google Photos Cleaner",
+  "name": "GPhotos Cleaner",
   "version": "0.1.0",
-  "description": "Analyse your Google Photos library locally \u2014 people, screenshots, blur, duplicates \u2014 and tick what to clean up.",
+  "description": "Analyses your Google Photos library locally and helps you decide what to delete. It ticks; you delete. Nothing leaves the browser.",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -60,5 +60,6 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "short_name": "GPhotos Cleaner"
 }
