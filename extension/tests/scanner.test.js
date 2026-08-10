@@ -240,7 +240,7 @@ test('the advice points at the wait that actually dominated', () => {
   const describe = Panel.prototype.describeWaits;
   const settleBound = describe.call({}, { waitMs: 9000, thumbWaitMs: 1000 });
   const imageBound = describe.call({}, { waitMs: 1000, thumbWaitMs: 9000 });
-  assert.match(settleBound, /zooming the page out/i);
+  assert.match(settleBound, /zooming out would cut/i);
   assert.match(imageBound, /would not help/i);
   assert.match(describe.call({}, { waitMs: 0, thumbWaitMs: 0 }), /No measurable/i);
 });

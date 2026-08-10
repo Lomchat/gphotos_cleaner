@@ -848,9 +848,9 @@ export class Panel {
           'div',
           { class: 'card' },
           el('div', { class: 'muted' },
-            `Scrolls the grid to list your items and analyses each thumbnail at ${this.state.settings.thumbSize}px as it goes: sharpness, brightness, perceptual hash, human presence, image type. Nothing in Google Photos is modified. Interruptible at any time — progress is kept.`),
+            `Lists your library and measures each thumbnail at ${this.state.settings.thumbSize}px. Nothing is modified. Stop any time — progress is kept.`),
           el('div', { class: 'muted', style: 'margin-top:6px' },
-            'Keep this tab in the foreground: Google Photos suspends rendering in hidden tabs.'),
+            'Keep this tab in front.'),
 
           this.buildSinceControl(),
           this.buildLimitControl(),
@@ -1023,7 +1023,7 @@ export class Panel {
       el('br'),
       bloquant
         ? 'Items were listed, but no image URL could be extracted. Either scrolling outran image loading, or Google changed the host serving them.'
-        : 'Google Photos fills the grid in two passes: tiles first, images second. These items were seen in between.'
+        : 'Seen before their image loaded.'
     );
 
     // Separate what will be retried automatically from what is permanently
@@ -1041,7 +1041,7 @@ export class Panel {
           ? [el('b', {}, `${nf(reprenables)} will be retried automatically`),
              ' at the end of the next run: each is brought back on screen, its image awaited, then analysed.']
           : [el('b', {}, `${nf(reprenables)} to recover`),
-             ' — too many for one-by-one recovery. Run again: a fresh pass over the grid picks them up along the way.']));
+             ' — run again, a fresh pass picks them up.']));
     }
 
     if (abandonnes > 0) {
@@ -1050,7 +1050,7 @@ export class Panel {
     }
 
     box.append(el('div', { class: 'muted', style: 'margin-top:6px' },
-      'If this repeats on every run, raise ',
+      'If it repeats, raise ',
       el('b', {}, 'Thumbnail wait'),
       ' in Settings → Speed, or reduce the scroll step.'));
 
@@ -1131,24 +1131,15 @@ export class Panel {
     const limit = s.maxPerRun || 0;
     const parts = [];
 
-    parts.push(limit
-      ? `will list at most ${nf(limit)} new photos`
-      : 'will list your whole library');
-    if (s.scanOlderThanTs) {
-      parts.push(`skipping anything newer than ${formatDate(s.scanOlderThanTs)}`);
-    }
-    parts.push(limit
-      ? `then analyse at most ${nf(limit)} thumbnails${pending ? ` (${nf(pending)} already pending)` : ''}`
-      : `then analyse everything pending${pending ? ` (${nf(pending)} so far)` : ''}`);
+    // The date window is stated by its own control just above; repeating it
+    // here only made the sentence longer without adding anything.
+    parts.push(limit ? `${nf(limit)} new photos` : 'your whole library');
+    if (pending) parts.push(`${nf(pending)} pending`);
 
     return el('div', { class: 'banner info', style: 'margin-top:12px' },
-      el('b', {}, 'This run '),
-      parts.join(', '),
-      '.',
-      limit
-        ? el('div', { class: 'muted', style: 'margin-top:5px' },
-            'Run again to continue: the position reached is remembered.')
-        : null);
+      el('b', {}, 'This run: '),
+      parts.join(' · '),
+      limit ? el('div', { class: 'muted tiny' }, 'Run again to continue.') : null);
   }
 
   /**
@@ -1207,7 +1198,7 @@ export class Panel {
 
     if (s.scanOlderThanTs) {
       wrap.append(el('div', { class: 'muted', style: 'margin-top:6px' },
-        `Only photos before ${formatDate(s.scanOlderThanTs)} are listed and analysed. Newer ones are skipped — the grid runs newest to oldest, so they are crossed in long strides at the start.`));
+        `Only photos before ${formatDate(s.scanOlderThanTs)}.`));
     }
     return wrap;
   }
@@ -1217,22 +1208,22 @@ export class Panel {
     const c = this.state.cursor;
     if (!this.state.settings.resumeScan) {
       return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
-        'Resume is off: every scan restarts from the top of the library.');
+        'Resume off: always restarts from the top.');
     }
     if (!c) return null;
 
     if (c.reachedEnd) {
       return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
         el('b', {}, 'Whole library walked. '),
-        'The next run restarts from the top to pick up recent additions — Google Photos puts new photos at the head of the grid.');
+        'Next run restarts from the top, to catch new photos.');
     }
 
     const pos = c.scrollHeight ? Math.round((c.scrollTop / c.scrollHeight) * 100) : null;
     return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
       el('b', {}, `Resuming${pos != null ? ` around ${pos}%` : ''} through the library. `),
-      `${nf(c.known || 0)} items already known; they will not be counted again. `,
+      `${nf(c.known || 0)} already known. `,
       el('span', { class: 'muted' },
-        'The grid reflows with window size, so resuming starts one screen earlier and duplicates are absorbed by id.'));
+        ''));
   }
 
 
@@ -1298,9 +1289,9 @@ export class Panel {
 
     const pct = (v) => `${Math.round((v / total) * 100)}%`;
     const advice = settle > thumbs
-      ? 'Most of it is settling the grid, which is per stop — zooming the page out while listing would cut it.'
-      : 'Most of it is waiting for images, which is per photo — zooming out would not help; lower "Thumbnail wait" in Settings instead.';
-    return `Waited ${dur(Math.round(total / 1000))}: ${pct(settle)} settling, ${pct(thumbs)} on images. ${advice}`;
+      ? 'Zooming out would cut the larger share.'
+      : 'Zooming out would not help; raise Thumbnail wait instead.';
+    return `Waited ${dur(Math.round(total / 1000))}: ${pct(settle)} on the grid, ${pct(thumbs)} on images. ${advice}`;
   }
 
   /**
@@ -1340,8 +1331,8 @@ export class Panel {
       const total = split.settle + split.thumbs;
       const share = Math.round((split.settle / total) * 100);
       verdict = share > 50
-        ? `Last run spent ${share}% of its waiting on settling the grid — that is the part zooming out divides.`
-        : `Last run spent ${100 - share}% of its waiting on images, which is per photo. Zooming out would change little here; lower "Thumbnail wait" in Settings instead.`;
+        ? `Last run: ${share}% of its waiting on the grid — the part this divides.`
+        : `Last run: ${100 - share}% of its waiting on images, which this will not change.`;
     }
 
     return el('div', { style: 'margin-top:12px' },
@@ -1349,8 +1340,8 @@ export class Panel {
       row,
       el('div', { class: 'muted tiny' },
         s.scanZoom < 1
-          ? 'The page shrinks so more thumbnails fit at once; this panel keeps its size. Put back when the run ends.'
-          : 'Listing stops once per screenful, and each stop waits for the grid to settle.'),
+          ? 'More thumbnails per screen. This panel keeps its size; the zoom is restored afterwards.'
+          : 'One stop per screenful, each waiting for the grid.'),
       measured
         ? el('div', { class: 'muted tiny', text: `Last run listed ${nf(Math.round(measured))} item(s) per stop.` })
         : null,
@@ -1393,12 +1384,12 @@ export class Panel {
           onchange: (e) => { s.scanPeople = e.target.checked; this.persist(); this.renderAll(); }
         }),
         el('span', {}, 'Also group photos by person'),
-        el('small', {}, `re-reads photos containing a face at ${PEOPLE_RENDER_PX}px`)),
+        el('small', {}, `re-reads faces at ${PEOPLE_RENDER_PX}px`)),
 
       s.scanPeople && !p.modelReady
         ? el('div', { class: 'muted', style: 'margin-top:6px' },
             'The first run will fetch a ', el('b', {}, '13 MB'),
-            ' recognition model, once. It is not bundled because its weights are licensed for non-commercial research use and this extension is MIT — and it is the only thing ever downloaded here that is not one of your photos. Untick to skip it entirely.')
+            ' recognition model, once — the only thing downloaded here that is not your photos. Untick to skip.')
         : null,
 
       bar,
@@ -1408,7 +1399,7 @@ export class Panel {
         ? el('button', {
             class: 'action', style: 'margin-top:8px',
             disabled: busy,
-            text: `Read faces in ${nf(todo.length)} already-analysed photo(s)`,
+            text: `Read faces in ${nf(todo.length)} photo(s)`,
             title: 'Catch up photos measured before this was switched on',
             onclick: () => this.runPeopleScan()
           })
@@ -1418,8 +1409,8 @@ export class Panel {
         ? el('div', {},
             el('div', { class: 'muted tiny', style: 'margin-top:6px' },
               p.faceCount
-                ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Pick them in the sorting view.`
-                : `Every candidate is marked read, yet no face is stored. ${nf(candidates.length)} photo(s) can be read again.`),
+                ? `${nf(p.faceCount)} face(s) · ${nf(p.groups.length)} person(s). Pick them in Sort.`
+                : `Marked read, but no face stored. ${nf(candidates.length)} can be read again.`),
             // Always reachable, because "marked read but nothing stored" is a
             // state the user cannot otherwise leave: nothing is pending, so the
             // catch-up button has nothing to offer, and the people list is

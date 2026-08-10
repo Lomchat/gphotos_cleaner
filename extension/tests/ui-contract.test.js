@@ -295,12 +295,15 @@ test('grouping is one switch, with no separate download step', () => {
 });
 
 test('the switch says what it will download, before anything runs', () => {
-  // The switch is the consent, so the disclosure has to sit on it rather than
-  // in a dialog after the fact.
+  // The switch is the consent, so the disclosure sits on it rather than in a
+  // dialog after the fact. Three facts, and no more than three: how big, that
+  // it is the only non-photo download, and how to decline. The licence — why it
+  // is not bundled — belongs in the README, not in front of a button.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   const block = methodBody(source, 'buildPeopleOption');
   assert.match(block, /13 MB/, 'the size must be stated');
-  assert.match(block, /non-commercial research use/, 'the licence must be stated');
+  assert.match(block, /not your photos|not one of your photos/,
+    'that it is the only non-photo download must be stated');
   assert.match(block, /Untick to skip/, 'declining must be offered');
 });
 

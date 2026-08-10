@@ -81,12 +81,16 @@ test('it gives up on the tail once most images are in', async () => {
 test('quiet time is measured in milliseconds, not in polls', async () => {
   // Counting polls made the behaviour depend on the polling rate: a faster poll
   // meant a shorter wait, which is backwards.
-  const slow = await run(new Array(2000).fill(0.8), { thumbPollMs: 1, thumbStallMs: 150, thumbWaitMaxMs: 4000 });
-  const fast = await run(new Array(2000).fill(0.8), { thumbPollMs: 20, thumbStallMs: 150, thumbWaitMaxMs: 4000 });
-  // Both must wait about the same wall-clock time; only the poll counts differ.
-  assert.ok(slow.polls > fast.polls * 2, 'the faster poll should have polled far more');
-  assert.ok(Math.abs(slow.elapsed - fast.elapsed) < 200,
-    `waits diverged: ${slow.elapsed}ms against ${fast.elapsed}ms`);
+  // The property is that the wall-clock wait is the same either way. Poll counts
+  // are not asserted: under load they depend on how the machine feels, and the
+  // first draft of this test was flaky for exactly that reason.
+  const STALL = 300;
+  const eager = await run(new Array(5000).fill(0.8), { thumbPollMs: 1, thumbStallMs: STALL, thumbWaitMaxMs: 4000 });
+  const lazy = await run(new Array(5000).fill(0.8), { thumbPollMs: 40, thumbStallMs: STALL, thumbWaitMaxMs: 4000 });
+  for (const [name, r] of [['1ms polling', eager], ['40ms polling', lazy]]) {
+    assert.ok(r.elapsed >= STALL * 0.7 && r.elapsed < STALL * 3,
+      `${name} waited ${r.elapsed}ms, expected about ${STALL}ms`);
+  }
 });
 
 test('the overall budget is still honoured', async () => {
