@@ -597,9 +597,28 @@ export function readCursor() {
  * Bring a tile back on screen using its recorded scroll landmark, then wait for
  * it to appear in the DOM.
  */
+/**
+ * Is this element comfortably inside the scroller?
+ *
+ * `margin` keeps it away from the edges, where Google's own overlays sit and a
+ * checkbox can be clipped or covered.
+ */
+export function isOnScreen(el, { margin = 60, scroller = null } = {}) {
+  const view = scroller || dom.findScroller();
+  if (!el || !view) return false;
+  const box = el.getBoundingClientRect();
+  const bounds = view.getBoundingClientRect();
+  if (!box.height) return false;
+  return box.top >= bounds.top + margin && box.bottom <= bounds.bottom - margin;
+}
+
 export async function bringIntoView(item, { timeoutMs = 4000 } = {}) {
   const existing = findTileById(item.id);
   if (existing) {
+    // Already on screen: leave the grid where it is. Re-centring every tile
+    // meant a scroll and a settle for each of the forty already in front of
+    // the user, which is most of the cost of ticking a run.
+    if (isOnScreen(existing)) return existing;
     existing.scrollIntoView({ block: 'center' });
     await sleep(90);
     return findTileById(item.id) || existing;

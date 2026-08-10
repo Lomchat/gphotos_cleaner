@@ -490,13 +490,15 @@ export class Panel {
         el('h2', {}, 'Sort your library'),
         this.modalCount,
         el('span', { class: 'spacer' }),
+        // Repainted, not re-rendered: rebuilding the grid would scroll the
+        // user back to the top of a list they were partway through.
         el('button', { class: 'action', text: 'Tick all', onclick: () => {
           this.state.selection = new Set(this.state.filtered.map((i) => i.id));
-          this.renderAll();
+          this.paintSelection();
         } }),
         el('button', { class: 'action', text: 'Untick all', onclick: () => {
           this.state.selection = new Set();
-          this.renderAll();
+          this.paintSelection();
         } }),
         el('button', { class: 'icon-btn', text: '✕', title: 'Close (Esc)', onclick: () => this.closeModal() })),
       el('div', { class: 'layout' }, side, main),
@@ -573,7 +575,32 @@ export class Panel {
     }
 
     this.rangePreview = null;
-    this.renderAll();
+    this.paintSelection();
+  }
+
+  /**
+   * Repaint ticks in place instead of rebuilding the grid.
+   *
+   * `renderAll` calls `replaceChildren` on the modal, which throws away the
+   * scroll position — so ticking a photo halfway down a long grid threw the
+   * user back to the top, every time. Nothing about the grid's contents changes
+   * when a tick does: only which tiles carry the class, and the counters.
+   */
+  paintSelection() {
+    const sel = this.state.selection;
+    const items = this.visibleItems();
+    for (const node of this.shadow.querySelectorAll('.thumb')) {
+      const item = items[Number(node.dataset.index)];
+      if (!item) continue;
+      const on = sel.has(item.id);
+      node.classList.toggle('on', on);
+      const mark = node.querySelector('.mark');
+      if (mark) mark.textContent = on ? '✓' : '';
+    }
+    this.paintRangePreview();
+    this.refreshCounters();
+    this.renderFooter();
+    this.renderBadge();
   }
 
   /**
@@ -822,6 +849,10 @@ export class Panel {
           kpi(nf(analyzed), 'analysed', analyzed && !pending ? 'good' : ''),
           kpi(nf(pending), 'pending', pending ? 'warn' : ''),
         ),
+        // The face pass is a second run over a subset, so it has its own
+        // arithmetic. Leaving it out of the status made it look as though
+        // nothing had happened, which is how it went unnoticed twice.
+        this.buildPeopleStatus(),
         failed
           ? el('div', { class: 'muted', style: 'margin-top:8px' },
               `${nf(failed)} thumbnail(s) failed, usually expired URLs. They are retried on the next run.`)
@@ -1346,6 +1377,32 @@ export class Panel {
         ? el('div', { class: 'muted tiny', text: `Last run listed ${nf(Math.round(measured))} item(s) per stop.` })
         : null,
       verdict ? el('div', { class: 'muted tiny', text: verdict }) : null);
+  }
+
+  /**
+   * Face-pass counters, beside the analysis ones.
+   *
+   * It reads a subset — only photos the analysis found a face in — so its
+   * numbers never match the totals above and are shown separately rather than
+   * folded in. Silence here is what let two bugs run unnoticed: the pass
+   * reported faces it had found while the store held none.
+   */
+  buildPeopleStatus() {
+    const p = this.state.people;
+    if (!this.state.settings.scanPeople && !p.faceCount) return null;
+
+    const candidates = peopleCandidates(this.state.items);
+    const todo = pendingPeople(this.state.items);
+    const read = candidates.length - todo.length;
+
+    return el('div', { style: 'margin-top:8px' },
+      el('div', { class: 'kpis' },
+        kpi(nf(read), 'faces read', read && !todo.length ? 'good' : ''),
+        kpi(nf(p.faceCount), 'faces'),
+        kpi(nf(p.groups.length), 'people')),
+      todo.length
+        ? el('div', { class: 'muted tiny' }, `${nf(todo.length)} still to read.`)
+        : null);
   }
 
   /**
@@ -2650,7 +2707,13 @@ export class Panel {
   async startSelect() {
     if (this.state.busy) return;
     const ids = new Set(this.state.selection);
-    const items = this.state.filtered.filter((i) => ids.has(i.id));
+    // Grid order, not display order: the grid runs newest to oldest, and the
+    // sorting view may be showing something else entirely. Ticking in the order
+    // the user happens to be looking at would walk the scroller back and forth
+    // across the whole library.
+    const items = this.state.items
+      .filter((i) => ids.has(i.id))
+      .sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0) || (a.id < b.id ? -1 : 1));
     if (!items.length) return;
 
     this.state.busy = 'select';

@@ -125,6 +125,13 @@ flips into the selection.
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
+Ticking has to happen in Google's own grid — the checkbox exists only for tiles
+it has rendered, so there is no id to click at. What it avoids is doing that
+work twice: tiles already on screen are ticked where they are rather than being
+scrolled to the centre first, and each click is confirmed by watching the box
+rather than by sleeping a fixed 90 ms. The items are walked in grid order so the
+scroller only ever moves one way.
+
 **Grouping by person.** One switch in the Analyse tab, **Also group photos by
 person**, ticked by default. With it on, each run additionally re-reads photos
 containing a face at a larger size, turns each face into an identity vector and
@@ -404,7 +411,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 397 tests, no external dependencies
+npm test        # 401 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

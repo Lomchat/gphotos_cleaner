@@ -8,15 +8,37 @@
  * That choice removes every irreversible code path at once — finding the delete
  * button, handling the confirmation dialog, batching, verifying a counter
  * before destroying. What remains is one action undone by a single click.
+ *
+ * Speed comes from not doing work that was never needed. The first version
+ * scrolled every tile to the centre of the screen and then slept a fixed 90 ms,
+ * whether or not the tile was already in front of the user and whether or not
+ * the click had already registered. On a screenful of forty tiles that is
+ * thirty-nine pointless scrolls and about nine seconds of sleeping.
  */
 
 import * as dom from './dom-adapter.js';
-import { bringIntoView, sleep, findTileById } from './scanner.js';
+import { bringIntoView, sleep, findTileById, isOnScreen } from './scanner.js';
 
 const DEFAULTS = {
-  clickDelayMs: 90,
-  hoverSettleMs: 40
+  pollMs: 12,           // how often to look for a state change
+  checkTimeoutMs: 700,  // how long to wait for a checkbox to take
+  hoverTimeoutMs: 400,  // how long to wait for a hover-inserted checkbox
+  // A tile this close to the edge may have its checkbox clipped or covered by
+  // Google's own overlays, so it is scrolled even though it is technically on
+  // screen.
+  edgeMarginPx: 60
 };
+
+/** Poll until `read` returns something truthy, or give up. */
+async function waitFor(read, timeoutMs, pollMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = read();
+    if (value) return value;
+    if (Date.now() >= deadline) return null;
+    await sleep(pollMs);
+  }
+}
 
 export class Selector {
   constructor(options = {}) {
@@ -26,6 +48,16 @@ export class Selector {
 
   abort() {
     this.aborted = true;
+  }
+
+  /**
+   * Is this tile usable where it sits, without moving the grid?
+   *
+   * Scrolling is the expensive part, and most of a run's items are already on
+   * screen: they were listed together, so they render together.
+   */
+  isReachable(tile) {
+    return isOnScreen(tile, { margin: this.opts.edgeMarginPx });
   }
 
   /**
@@ -43,7 +75,12 @@ export class Selector {
       if (this.aborted) break;
       const item = items[i];
       try {
-        const tile = await bringIntoView(item);
+        // Only scroll when the tile is not already usable where it is. Items
+        // arrive in grid order, so a scroll typically brings the next several
+        // dozen into reach at once.
+        let tile = findTileById(item.id);
+        if (!this.isReachable(tile)) tile = await bringIntoView(item);
+
         if (!tile) {
           failed.push({ id: item.id, reason: 'tile not found after scrolling' });
         } else {
@@ -70,25 +107,32 @@ export class Selector {
 
   /** @returns {Promise<true|string>} true, or the failure reason */
   async check(item, tile) {
-    dom.hover(tile);
-    await sleep(this.opts.hoverSettleMs);
-
+    // Try without hovering first: on many tiles the checkbox is already in the
+    // DOM, and hovering then sleeping was pure cost.
     let cb = dom.findCheckbox(tile);
     if (!cb) {
-      // The checkbox may only be inserted on hover; retry.
-      await sleep(160);
-      const again = findTileById(item.id) || tile;
-      dom.hover(again);
-      await sleep(80);
-      cb = dom.findCheckbox(again);
+      dom.hover(tile);
+      cb = await waitFor(
+        () => dom.findCheckbox(findTileById(item.id) || tile),
+        this.opts.hoverTimeoutMs,
+        this.opts.pollMs
+      );
     }
     if (!cb) return 'checkbox not found';
     if (dom.isChecked(cb)) return true;
 
     dom.realClick(cb);
-    await sleep(this.opts.clickDelayMs);
-    const fresh = dom.findCheckbox(findTileById(item.id) || tile);
-    if (fresh && !dom.isChecked(fresh)) return 'checkbox stayed unchecked';
-    return true;
+
+    // Wait for the box to actually take, rather than for a fixed delay chosen
+    // to be safe on a slow day. Most clicks register within a frame or two.
+    const took = await waitFor(
+      () => {
+        const fresh = dom.findCheckbox(findTileById(item.id) || tile);
+        return fresh && dom.isChecked(fresh);
+      },
+      this.opts.checkTimeoutMs,
+      this.opts.pollMs
+    );
+    return took ? true : 'checkbox stayed unchecked';
   }
 }

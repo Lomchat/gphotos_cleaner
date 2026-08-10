@@ -10,6 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { Panel } from '../src/ui/panel.js';
 
@@ -25,6 +26,10 @@ function panel(ids, selected = []) {
     rangePreview: null,
     shiftHeld: false,
     renderAll() { this.rendered = (this.rendered || 0) + 1; },
+    // Ticking repaints rather than re-rendering, so the grid keeps its scroll
+    // position. The double counts both, and the tests below assert that a tick
+    // never reaches for the heavy one.
+    paintSelection() { this.repainted = (this.repainted || 0) + 1; },
     paintRangePreview() { painted.push(this.rangePreview); },
     pickThumb: Panel.prototype.pickThumb,
     previewRange: Panel.prototype.previewRange,
@@ -183,4 +188,41 @@ test('the outline describes exactly what the click will take', () => {
 
   p.pickThumb('d', 3, true);
   assert.deepEqual(sel(p), promised.sort());
+});
+
+/* ------------------------------------------------------- keeping the place */
+
+test('ticking repaints in place instead of rebuilding the grid', () => {
+  // The modal renders with replaceChildren, which discards the scroll position.
+  // Ticking a photo halfway down a long grid used to throw the user back to the
+  // top — every single time.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const pick = source.slice(source.indexOf('\n  pickThumb('), source.indexOf('\n  previewRange('));
+  assert.equal(/renderAll\(\)/.test(pick), false,
+    'a tick must not re-render: it would lose the scroll position');
+  assert.match(pick, /paintSelection\(\)/);
+});
+
+test('tick all and untick all keep the place too', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const modal = source.slice(source.indexOf('Tick all'), source.indexOf('Untick all') + 400);
+  assert.equal(/renderAll\(\)/.test(modal), false,
+    'the bulk buttons must repaint, not re-render');
+});
+
+test('the repaint updates the marks, the counters and the footer', () => {
+  // A tick that changed the border but not the count would be worse than a
+  // rebuild: the number under the button is what the user reads before acting.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const paint = source.slice(source.indexOf('\n  paintSelection()'), source.indexOf('\n  previewRange('));
+  for (const call of ['classList.toggle', 'refreshCounters()', 'renderFooter()']) {
+    assert.ok(paint.includes(call), `paintSelection must call ${call}`);
+  }
+});
+
+test('a tick repaints and never re-renders', () => {
+  const p = panel(['a', 'b', 'c']);
+  p.pickThumb('b', 1, false);
+  assert.equal(p.repainted, 1);
+  assert.equal(p.rendered, undefined, 're-rendering would lose the scroll position');
 });
