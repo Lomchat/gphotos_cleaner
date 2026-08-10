@@ -96,6 +96,11 @@ happens in the wide view — criteria on the left, order buttons above, thumbnai
 filling the rest. Judging thumbnails is the whole task, and a 440px column shows
 sixteen at a time in a strip too narrow to tell a soft face from a sharp one.
 
+With no criterion ticked the grid simply shows the whole library, and nothing is
+ticked — browsing, not filtering. Switch a criterion on and everything it
+matches is ticked for you; that is the difference between a grid chosen by a
+rule and one nobody has judged.
+
 The number beside each criterion is exactly what that criterion alone would
 catch. A row of **order** buttons sits above the grid, sticky while it scrolls. An order never changes *what* is
 selected, only where it sits — it is a reason to look, not a filter:
@@ -168,6 +173,14 @@ Below roughly 21px the headroom collapses, so faces narrower than 24 source
 pixels are counted and skipped rather than guessed at. Only photos the main
 analysis already believes contain a face are re-read; a landscape has no
 identity to find.
+
+**How alike is the same person?** The threshold has a slider, because the answer
+depends on whose photos these are. The default was read off studio portraits —
+worst same-person pair 0.48, closest strangers 0.63 — and a real library of
+profiles, sunglasses and twenty years of ageing pushes same-person distances
+well past that, scattering one person across several groups. The two failures
+are not symmetrical: too strict is untidy, too loose puts two people in one
+group and offers up somebody else's photos. Past 0.63 the panel says so.
 
 Grouping is agglomerative, not DBSCAN. DBSCAN needs the pairwise distance
 matrix, and 10,000 faces is 100 million pairs — 400 MB to hold, in a content
@@ -371,7 +384,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 368 tests, no external dependencies
+npm test        # 378 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

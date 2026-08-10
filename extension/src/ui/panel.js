@@ -22,7 +22,7 @@ import {
   SORTS, SORT_KEYS, groupSizeMap
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
-import { groupLabel } from '../analysis/cluster.js';
+import { groupLabel, DEFAULT_EPS } from '../analysis/cluster.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 import {
   candidates as peopleCandidates, pending as pendingPeople,
@@ -53,7 +53,8 @@ const DEFAULT_SETTINGS = {
   scanPeople: true,      // read faces as part of the main run
   scanZoom: 1,           // page zoom while listing; 1 = leave it alone
   lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
-  lastWaitSplit: null    // {settle, thumbs} — which fix would actually help
+  lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
+  peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
 
 /**
@@ -255,6 +256,7 @@ export class Panel {
       tab: 'scan',
       renderLimit: 300,
       busy: null,
+      browsing: true,
       modalOpen: false,
       dupStale: false,
       faceModel: null,
@@ -467,7 +469,7 @@ export class Panel {
       main.append(el('div', { class: 'muted' },
         Object.values(this.state.filters.enabled).some(Boolean)
           ? 'Nothing matches the active criteria.'
-          : 'Enable at least one criterion on the left.'));
+          : 'Nothing here yet — analyse your library first.'));
     } else {
       const grid = el('div', { class: 'grid' });
       shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
@@ -481,8 +483,7 @@ export class Panel {
       }
     }
 
-    this.modalCount = el('span', { class: 'count' },
-      `${nf(this.state.filtered.length)} matching · ${nf(n)} ticked`);
+    this.modalCount = el('span', { class: 'count' }, this.countsLabel());
 
     this.modal.replaceChildren(
       el('header', {},
@@ -752,9 +753,15 @@ export class Panel {
     this.state.filtered = r.items;
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
-    // Any filter change resets the selection to "everything that matches":
-    // keeping a stale partial selection would be a dangerous trap.
-    this.state.selection = new Set(r.items.map((i) => i.id));
+    this.state.browsing = !!r.browsing;
+    // With criteria on, everything shown was chosen by a rule, so ticking it
+    // all is the useful default — and any filter change resets it, because a
+    // stale partial selection is a trap.
+    //
+    // With no criterion on, the grid is the whole library and nothing has been
+    // judged. Ticking it would put every photo one click from Google's bin, so
+    // browsing starts empty and the user ticks what they mean.
+    this.state.selection = r.browsing ? new Set() : new Set(r.items.map((i) => i.id));
   }
 
   /* ---------------------------------------------------------------- rendu */
@@ -1266,11 +1273,10 @@ export class Panel {
           kpi(nf(active), 'criteria on'),
           kpi(nf(this.state.filtered.length), 'matching'),
           kpi(nf(this.state.selection.size), 'ticked')),
-        active
-          ? el('div', { class: 'muted tiny', style: 'margin-top:8px' },
-              `Ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}".`)
-          : el('div', { class: 'muted tiny', style: 'margin-top:8px' },
-              'No criterion is on yet, so nothing is selected.'))
+        el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+          active
+            ? `Ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}". Everything matching is ticked.`
+            : 'No criterion on: the whole library is shown, nothing ticked. Tick photos yourself, or switch a criterion on.'))
     );
   }
 
@@ -1703,7 +1709,7 @@ export class Panel {
     }
     const total = nf(this.state.filtered.length);
     const coches = nf(this.state.selection.size);
-    if (this.modalCount) this.modalCount.textContent = `${total} matching · ${coches} ticked`;
+    if (this.modalCount) this.modalCount.textContent = this.countsLabel();
     if (this.footerSummary) this.footerSummary.replaceChildren(el('b', {}, coches), ' item(s) ticked');
   }
 
@@ -1723,6 +1729,60 @@ export class Panel {
   /* ------------------------------------------------------------ onglet 3 */
 
   /**
+   * How alike two faces must be to count as one person.
+   *
+   * Exposed because the right value depends on whose photos these are. The
+   * default was read off studio portraits, where the worst same-person pair sat
+   * at 0.48 and the closest strangers at 0.63. A real library has profiles,
+   * sunglasses and twenty years of ageing, which push same-person distances up
+   * — so one person scatters across several groups unless this is loosened.
+   *
+   * The two failures are not symmetrical, and the wording says so. Too strict
+   * and you get one person several times over, which is untidy. Too loose and
+   * two people share a group, which offers up somebody else's photos.
+   */
+  buildEpsControl() {
+    const s = this.state.settings;
+    const busy = !!this.state.busy;
+    const value = s.peopleEps;
+    const risky = value > 0.63;
+
+    const out = el('output', { text: value.toFixed(2) });
+    return el('div', { style: 'margin-top:10px' },
+      el('div', { class: 'slider' },
+        el('label', {}, 'Same person if closer than'),
+        el('input', {
+          type: 'range', min: 0.45, max: 0.75, step: 0.01, value,
+          disabled: busy,
+          oninput: (e) => { out.textContent = Number(e.target.value).toFixed(2); },
+          onchange: (e) => {
+            s.peopleEps = Number(e.target.value);
+            this.persist();
+            this.rebuildGroups();
+          }
+        }),
+        out,
+        // Not resetButton(): that one restores filter defaults, and this is a
+        // setting. Pointing it here would write undefined into the threshold.
+        el('button', {
+          class: 'reset', text: '↺',
+          title: value === DEFAULT_EPS
+            ? 'Already at the default'
+            : `Restore the default (${DEFAULT_EPS.toFixed(2)})`,
+          disabled: busy || value === DEFAULT_EPS,
+          onclick: () => {
+            s.peopleEps = DEFAULT_EPS;
+            this.persist();
+            this.rebuildGroups();
+          }
+        })),
+      el('div', { class: risky ? 'banner warn' : 'muted tiny' },
+        risky
+          ? 'Past 0.63 two different people start sharing a group — check the "mixed?" flags before acting on a filter.'
+          : 'Lower splits one person into several groups; higher risks merging two people. Changing it regroups straight away.'));
+  }
+
+  /**
    * The people picker, shown beside the criteria that use it.
    *
    * It sits in the sorting view rather than in a tab of its own because it is
@@ -1731,6 +1791,20 @@ export class Panel {
    * photos happens during the analysis that feeds it, so there is never a
    * second run to remember.
    */
+  /**
+   * What the grid is showing, in its own words.
+   *
+   * "matching" is a claim about criteria. With none on, the grid is simply the
+   * library, and calling that a match would suggest a judgement nobody made.
+   */
+  countsLabel() {
+    const total = nf(this.state.filtered.length);
+    const ticked = nf(this.state.selection.size);
+    return this.state.browsing
+      ? `${total} photo(s) · ${ticked} ticked · no criterion on`
+      : `${total} matching · ${ticked} ticked`;
+  }
+
   buildPeopleSection() {
     const p = this.state.people;
     const busy = !!this.state.busy;
@@ -1785,6 +1859,7 @@ export class Panel {
       el('div', { class: 'muted tiny' },
         'Tick who you mean, then use the two people criteria above. Names survive a rebuild.'),
       list,
+      this.buildEpsControl(),
       p.error ? el('div', { class: 'banner danger' }, p.error) : null,
       el('div', { class: 'buttons' },
         el('button', {
@@ -1930,7 +2005,10 @@ export class Panel {
     try {
       // Existing groups are passed in so their names can follow their person
       // across the rebuild; ids are positional and cannot carry a name.
-      const { groups, faces } = await regroup({ previous: p.groups });
+      const { groups, faces } = await regroup({
+        previous: p.groups,
+        eps: this.state.settings.peopleEps
+      });
       p.faceCount = faces;
       p.groups = forDisplay(groups, this.state.items);
       if (!quiet) await this.reload();

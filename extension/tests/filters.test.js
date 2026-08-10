@@ -159,10 +159,36 @@ test('blur and darkness do not apply to videos', () => {
   assert.deepEqual(r.matched, [], 'neither blur nor "no people" may touch a video');
 });
 
-test('applyFilters returns nothing when no criterion is active', () => {
+test('with no criterion active the whole library is shown', () => {
+  // Browsing, not filtering. An empty page behind a criterion you have to guess
+  // at is a worse first impression than simply showing the photos.
   const r = applyFilters([item('a'), item('b')], filters());
-  assert.equal(r.items.length, 0);
+  assert.equal(r.items.length, 2);
   assert.equal(r.activeCount, 0);
+  assert.equal(r.browsing, true);
+});
+
+test('nothing is reported as matched while browsing', () => {
+  // The tiles read their badges from `matched`. Inventing one would label a
+  // photo with a judgement no criterion made.
+  const r = applyFilters([item('a')], filters());
+  assert.deepEqual(r.items[0].matched, []);
+});
+
+test('browsing is flagged distinctly from an empty result', () => {
+  // The caller ticks everything a criterion matched, and must not do that for a
+  // library nobody has judged — so the two cases cannot look alike.
+  const browsing = applyFilters([item('a')], filters());
+  const noMatch = applyFilters([item('a')], filters({ enabled: { blurry: true } }));
+  assert.equal(browsing.browsing, true);
+  assert.equal(noMatch.browsing, false);
+  assert.equal(noMatch.items.length, 0);
+});
+
+test('browsing still honours the chosen order', () => {
+  const items = [item('old', { ts: 100 }), item('new', { ts: 900 })];
+  const f = { ...filters(), sort: 'oldest' };
+  assert.deepEqual(applyFilters(items, f).items.map((i) => i.id), ['old', 'new']);
 });
 
 test('applyFilters ranks the most suspicious items first', () => {

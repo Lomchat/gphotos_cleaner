@@ -313,3 +313,33 @@ test('a blocked criterion only offers a way out when the fix is elsewhere', () =
   assert.notEqual(gate, -1, 'the button must be gated on whether any people exist');
   assert.ok(gate < button, 'the gate must come before the button it guards');
 });
+
+test('browsing never arrives with photos already ticked', () => {
+  // With criteria on, everything shown was chosen by a rule and ticking it all
+  // is useful. With none on, the grid is the whole library and nothing has been
+  // judged — ticking it would put every photo one click from Google's bin.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'recompute');
+  assert.match(body, /r\.browsing\s*\?\s*new Set\(\)/,
+    'recompute must leave the selection empty while browsing');
+});
+
+test('the similarity slider writes to the setting, not to the filters', () => {
+  // resetButton() restores DEFAULT_FILTERS entries. The threshold is a setting,
+  // so pointing that helper at it would write undefined and quietly disable
+  // grouping altogether.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildEpsControl');
+  assert.equal(/resetButton\(\[/.test(body), false,
+    'the filter reset helper must not be used for a setting');
+  assert.match(body, /s\.peopleEps = DEFAULT_EPS/, 'its own reset must restore the default');
+  assert.match(body, /rebuildGroups\(\)/, 'changing it must regroup');
+});
+
+test('the similarity slider spans the measured window and beyond', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildEpsControl');
+  assert.match(body, /min: 0\.45/, 'must reach below the same-person floor');
+  assert.match(body, /max: 0\.7/, 'must reach past the stranger threshold, with a warning');
+  assert.match(body, /mixed\?|different people/i, 'the risky end must say what goes wrong');
+});

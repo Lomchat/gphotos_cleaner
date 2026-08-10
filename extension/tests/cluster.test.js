@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 
 import {
   clusterFaces, assignToGroups, carryNames, groupLabel, peopleByPhoto,
-  normalise, distance, toVector, DEFAULT_EPS
+  normalise, distance, toVector, DEFAULT_EPS, MERGE_RATIO
 } from '../src/analysis/cluster.js';
 
 /* ------------------------------------------------------------- fixtures */
@@ -324,8 +324,58 @@ test('group ids per photo come back sorted', () => {
   assert.deepEqual(byPhoto.get('a'), [1, 3, 5]);
 });
 
-test('the default threshold is the one the model was measured against', () => {
-  assert.equal(DEFAULT_EPS, 0.55);
+test('the default threshold stays inside the measured window', () => {
+  // Read off labelled photographs: same person at worst 0.48, closest
+  // strangers 0.63. Anything outside that either scatters one person across
+  // many groups or starts merging two — and a merge is the failure that offers
+  // up someone else's photos.
+  assert.ok(DEFAULT_EPS > 0.48, 'below this one person splits apart');
+  assert.ok(DEFAULT_EPS < 0.63, 'above this two people start merging');
+});
+
+test('the merge pass is not stricter than the assignment', () => {
+  // A person splits because something systematic separates the two halves, and
+  // averaging does not remove a systematic difference. A stricter bar for
+  // centroids therefore leaves exactly the splits it was meant to repair.
+  assert.ok(MERGE_RATIO >= 1, 'centroids must be allowed to meet the same bar');
+  assert.ok(MERGE_RATIO <= 1.2, 'past this the two identities start to mix');
+});
+
+test('the default merge never places fewer faces than a stricter one', () => {
+  // Measured across seeds the gain is modest — 11.2 faces placed at 0.8 against
+  // 12.5 at 1.0 — so this asserts the direction, not a figure. The large lever
+  // on splitting is eps, which is why eps is the one with a slider.
+  for (const seed of [44, 7, 21, 3]) {
+    const faces = people([24, 20], { jitter: 0.30, seed });
+    const placed = (mergeRatio) =>
+      clusterFaces(faces, { mergeRatio }).groups.reduce((n, g) => n + g.size, 0);
+    assert.ok(placed(MERGE_RATIO) >= placed(0.8), `seed ${seed} placed fewer faces`);
+  }
+});
+
+test('a much looser merge is what starts mixing identities', () => {
+  // The cliff sits just past the default: 1 run in 6 mixed at 1.0, 4 in 6 at
+  // 1.1. This documents why the constant is not simply raised further.
+  const mixedAt = (mergeRatio) => {
+    let mixed = 0;
+    for (const seed of [44, 7, 21, 3, 58, 90]) {
+      const faces = people([24, 20], { jitter: 0.30, seed });
+      const byId = new Map(faces.map((f) => [f.id, f.person]));
+      const { groups } = clusterFaces(faces, { mergeRatio });
+      if (groups.some((g) => new Set(g.members.map((m) => byId.get(m))).size > 1)) mixed++;
+    }
+    return mixed;
+  };
+  assert.ok(mixedAt(1.3) > mixedAt(MERGE_RATIO), 'the cliff past the default must be real');
+});
+
+test('ordinary variation still groups cleanly at the default', () => {
+  const faces = people([24, 20], { jitter: 0.08, seed: 44 });
+  const byId = new Map(faces.map((f) => [f.id, f.person]));
+  for (const g of clusterFaces(faces).groups) {
+    assert.equal(new Set(g.members.map((m) => byId.get(m))).size, 1,
+      'a group mixed two identities at the defaults');
+  }
 });
 
 /* ------------------------------------------------ crossing a JSON boundary */

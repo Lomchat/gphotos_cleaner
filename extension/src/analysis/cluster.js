@@ -19,18 +19,46 @@
  * to the same standard as the reference implementation.
  */
 
-/** Cosine distance at which two faces are considered the same person. */
-export const DEFAULT_EPS = 0.55;
+/**
+ * Cosine distance at which two faces are taken to be the same person.
+ *
+ * 0.55 was read off five studio portraits, where the worst same-person pair sat
+ * at 0.48 and the closest strangers at 0.63. Real libraries are not studio
+ * portraits: profiles, sunglasses, bad light and twenty years of ageing push
+ * same-person distances well past that, and the result was one person scattered
+ * across a dozen groups.
+ *
+ * 0.60 keeps a margin under the stranger distance while placing far more faces.
+ * It is a starting point, not a constant of nature — the People list has a
+ * slider, because the right value depends on whose photos these are.
+ */
+export const DEFAULT_EPS = 0.6;
 
 /**
- * Merging is deliberately stricter than assigning.
+ * How the merge pass is scaled relative to `eps`.
  *
- * Two centroids are each already an average of several faces, so they sit
- * closer to their true identity than any single face does. Merging at the same
- * threshold used for raw faces would pull distinct people together — and a
- * wrong merge is the failure that offers up someone else's photos.
+ * This was 0.8, on the reasoning that a centroid is an average and therefore
+ * closer to the true identity than any single face, so it should have to meet a
+ * stricter bar. That reasoning was wrong about the case that matters. A person
+ * splits into two clusters because something *systematic* separates them —
+ * frontal against profile, indoors against sun — and averaging does not remove
+ * a systematic difference the way it removes noise. The two centroids keep the
+ * gap, sit above the stricter bar, and never merge.
+ *
+ * Measured over six runs of 44 faces from two people with wide within-person
+ * variation, at the default eps:
+ *
+ *   ratio   faces placed   runs that mixed two identities
+ *   0.8         11.2            1 of 6
+ *   1.0         12.5            1 of 6
+ *   1.1         25.2            4 of 6
+ *   1.2         35.8            5 of 6
+ *
+ * So 1.0 is a modest gain at no extra risk, and the cliff is immediately after.
+ * The large lever on splitting is `eps`, not this — which is why `eps` is the
+ * one exposed to the user.
  */
-export const MERGE_RATIO = 0.8;
+export const MERGE_RATIO = 1.0;
 
 /** A person seen once cannot be told apart from a stranger; leave them out. */
 export const DEFAULT_MIN_SIZE = 2;
@@ -100,7 +128,9 @@ export function distance(a, b) {
  * @returns {{groups: Array, ungrouped: string[]}} groups carry `members`
  *   (face ids), `photoIds`, `centroid` and `spread`.
  */
-export function clusterFaces(faces, { eps = DEFAULT_EPS, minSize = DEFAULT_MIN_SIZE } = {}) {
+export function clusterFaces(faces, {
+  eps = DEFAULT_EPS, minSize = DEFAULT_MIN_SIZE, mergeRatio = MERGE_RATIO
+} = {}) {
   if (!faces.length) return { groups: [], ungrouped: [] };
 
   // Coerce first, then measure: the raw value may have crossed a JSON boundary
@@ -128,7 +158,7 @@ export function clusterFaces(faces, { eps = DEFAULT_EPS, minSize = DEFAULT_MIN_S
   }
 
   // ---- merge: repair the order-dependence of the pass above ---------------
-  mergeClusters(clusters, eps * MERGE_RATIO, dim);
+  mergeClusters(clusters, eps * mergeRatio, dim);
 
   // ---- report -------------------------------------------------------------
   const groups = [];

@@ -257,7 +257,17 @@ export function applyFilters(items, filters, precomputedDuplicates, context) {
   }
 
   const activeCount = Object.values(filters.enabled).filter(Boolean).length;
-  if (!activeCount) return { items: [], groups, keepers, activeCount };
+
+  // No criterion ticked: show the whole library rather than an empty page.
+  // `browsing` travels with the result because it changes what a selection
+  // means. With criteria on, everything shown was chosen by a rule and can be
+  // ticked wholesale; here nothing has been judged, so the caller must not tick
+  // anything on the user's behalf.
+  if (!activeCount) {
+    const all = items.map((it) => ({ ...it, matched: [] }));
+    sortItems(all, filters.sort, context);
+    return { items: all, groups, keepers, activeCount, browsing: true };
+  }
 
   const out = [];
   for (const it of items) {
@@ -266,7 +276,7 @@ export function applyFilters(items, filters, precomputedDuplicates, context) {
     if (hit) out.push({ ...it, matched: r.matched });
   }
   sortItems(out, filters.sort, context);
-  return { items: out, groups, keepers, activeCount };
+  return { items: out, groups, keepers, activeCount, browsing: false };
 }
 
 /* ------------------------------------------------------------------ order */
