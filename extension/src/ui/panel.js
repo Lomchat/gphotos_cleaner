@@ -1394,6 +1394,7 @@ export class Panel {
     // analysis skips what it has already measured, so it would never revisit
     // them. This catches them up without re-analysing anything else.
     const todo = pendingPeople(this.state.items);
+    const candidates = peopleCandidates(this.state.items);
 
     return el('div', { style: 'margin-top:10px' },
       el('label', { class: 'switch' },
@@ -1413,10 +1414,23 @@ export class Panel {
             title: 'Catch up photos measured before this was switched on',
             onclick: () => this.runPeopleScan()
           })
-        : el('div', { class: 'muted tiny', style: 'margin-top:6px' },
-            p.faceCount
-              ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Pick them in the sorting view.`
-              : 'Every analysed photo with a face has been read.'));
+        : el('div', {},
+            el('div', { class: 'muted tiny', style: 'margin-top:6px' },
+              p.faceCount
+                ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Pick them in the sorting view.`
+                : `Every candidate is marked read, yet no face is stored. ${nf(candidates.length)} photo(s) can be read again.`),
+            // Always reachable, because "marked read but nothing stored" is a
+            // state the user cannot otherwise leave: nothing is pending, so the
+            // catch-up button has nothing to offer, and the people list is
+            // empty so its own reset is not on screen either.
+            el('button', {
+              class: p.faceCount ? 'action' : 'action primary',
+              style: 'margin-top:8px',
+              disabled: busy || !candidates.length,
+              text: `Read all ${nf(candidates.length)} again`,
+              title: 'Forget every stored face and read the candidates from scratch',
+              onclick: () => this.rereadAllFaces()
+            })));
   }
 
   /**
@@ -1928,6 +1942,26 @@ export class Panel {
       this.recompute();
       this.renderAll();
     }
+  }
+
+  /**
+   * Drop every stored face and read the candidates again.
+   *
+   * The escape hatch from "marked read, nothing stored" — a state a bug could
+   * leave behind and which is otherwise a dead end, since nothing is pending
+   * and the people list that carries the other reset is empty.
+   */
+  async rereadAllFaces() {
+    if (this.state.busy) {
+      this.flashStatus('Another run is in progress', 'error', 4000);
+      return;
+    }
+    await db.clearFaces();
+    this.state.people.groups = [];
+    this.state.people.faceCount = 0;
+    this.state.filters.personIds = [];
+    await this.reload();
+    await this.runPeopleScan();
   }
 
   async clearPeopleData() {

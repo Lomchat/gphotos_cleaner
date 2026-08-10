@@ -167,6 +167,22 @@ export async function clearPeople() {
 /* ------------------------------------------------------------------ faces */
 
 /**
+ * Key bounds covering every face row of one photo.
+ *
+ * Split out so the reasoning can be tested without a database. The upper bound
+ * uses U+FFFF, above every character Google puts in a photo id, and "#" sorts
+ * below all of them — so "p0#" .. "p0#￿" catches p0's rows and stops short
+ * of "p0extra#0".
+ */
+export function faceKeyBounds(photoId) {
+  return [`${photoId}#`, `${photoId}#￿`];
+}
+
+export function faceRowId(photoId, index) {
+  return `${photoId}#${index}`;
+}
+
+/**
  * Replace every face known for these photos.
  *
  * Keyed by photo so re-running the pass cannot accumulate duplicates: the old
@@ -181,22 +197,28 @@ export async function saveFaces(results, analysed) {
     const t = db.transaction([STORE_FACES, STORE_ITEMS], 'readwrite');
     const faces = t.objectStore(STORE_FACES);
     const items = t.objectStore(STORE_ITEMS);
-    const index = faces.index('photoId');
 
+    // Cleared by key range, not by walking a cursor.
+    //
+    // A cursor queues its deletes from inside its own success callbacks, which
+    // run *after* the puts below have already been queued — so it walks over
+    // the rows just written and deletes those too. Re-saving a photo therefore
+    // wiped its faces instead of replacing them, silently, and the grouping
+    // that followed found nothing to group.
+    //
+    // A range delete is a single request, ordered before the puts, and cannot
+    // see them. The range works because this function owns the key format
+    // below: `${photoId}#${i}`, and "#" sorts below every character Google uses
+    // in a photo id, so the bound covers this photo's rows and no other's.
     for (const photoId of analysed) {
-      const cursor = index.openKeyCursor(IDBKeyRange.only(photoId));
-      cursor.onsuccess = () => {
-        const c = cursor.result;
-        if (!c) return;
-        faces.delete(c.primaryKey);
-        c.continue();
-      };
+      const [low, high] = faceKeyBounds(photoId);
+      faces.delete(IDBKeyRange.bound(low, high));
     }
 
     for (const r of results) {
       (r.faces || []).forEach((face, i) => {
         faces.put({
-          id: `${r.id}#${i}`,
+          id: faceRowId(r.id, i),
           photoId: r.id,
           box: face.box,
           score: face.score,
