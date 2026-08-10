@@ -59,11 +59,13 @@ Two controls bound the work, and a banner states what the next run will do:
   date. The useful direction for cleaning: purge the old, never touch the recent.
 - **Limit per run** — none, 500, 2,000, 10,000 or a custom number.
 
-**2 · Sort.** Tick criteria and adjust thresholds. The number beside each
-criterion is exactly what that criterion alone would catch. **Open full screen**
-gives a wide grid with the criteria in a left column.
+**2 · Sort.** The tab itself is a door: a summary and one button. The work
+happens in the wide view — criteria on the left, order buttons above, thumbnails
+filling the rest. Judging thumbnails is the whole task, and a 440px column shows
+sixteen at a time in a strip too narrow to tell a soft face from a sharp one.
 
-A row of **order** buttons sits above the grid. An order never changes *what* is
+The number beside each criterion is exactly what that criterion alone would
+catch. A row of **order** buttons sits above the grid, sticky while it scrolls. An order never changes *what* is
 selected, only where it sits — it is a reason to look, not a filter:
 
 | Order | Puts first |

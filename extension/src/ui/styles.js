@@ -747,6 +747,19 @@ footer .buttons button { flex: 1; }
 }
 .sorts button:disabled { opacity: .35; cursor: not-allowed; }
 
+/* In the wide view the bar sits above the grid and stays put while it scrolls:
+   the order is a claim about what the top of the grid means, so it should not
+   scroll away from the thing it describes. */
+.sortbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 2px 0 10px;
+  margin-bottom: 4px;
+  background: linear-gradient(var(--bg) 72%, transparent);
+}
+.sortbar .sorts { margin-bottom: 4px; }
+
 /* ------------------------------------------------------------- people tab */
 
 .card-title {

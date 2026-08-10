@@ -117,7 +117,8 @@ test('every class used by the panel is defined', () => {
     'score', 'chip', 'reset', 'count', 'stale', 'filter', 'controls',
     'slider', 'banner', 'kpi', 'progress', 'log', 'summary', 'buttons',
     'hero', 'ring', 'center', 'milestones', 'ms', 'icon', 'mark', 'num',
-    'people', 'person', 'faces', 'field', 'card-title', 'tiny'
+    'people', 'person', 'faces', 'field', 'card-title', 'tiny',
+    'sorts', 'sortbar', 'ranged'
   ];
   for (const cls of critical) {
     assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),

@@ -249,7 +249,7 @@ export class Panel {
       filters: structuredClone(DEFAULT_FILTERS),
       settings: { ...DEFAULT_SETTINGS },
       tab: 'scan',
-      renderLimit: 120,
+      renderLimit: 300,
       busy: null,
       modalOpen: false,
       dupStale: false,
@@ -452,6 +452,10 @@ export class Panel {
     for (const crit of CRITERIA) side.append(this.buildCriterion(crit));
 
     const main = el('div', { class: 'main' });
+    // The order bar sits above the grid it reorders, not in the side column
+    // with the criteria: those two do different jobs, and mixing them invites
+    // reading an order as one more thing that changes the selection.
+    main.append(this.buildSortBar({ compact: true }));
     if (!this.state.filtered.length) {
       main.append(el('div', { class: 'muted' },
         Object.values(this.state.filters.enabled).some(Boolean)
@@ -752,8 +756,6 @@ export class Panel {
     // Counter references are rebuilt on every render; keeping the old ones
     // would write into detached nodes.
     this.counterEls = new Map();
-    this.previewHeading = null;
-    this.previewCount = null;
     this.modalCount = null;
     this.footerSummary = null;
 
@@ -1221,51 +1223,47 @@ export class Panel {
 
 
   /* ------------------------------------------------------------ onglet 2 */
-
+  /**
+   * Sort tab: a door, not a room.
+   *
+   * Judging thumbnails is the whole task, and a 440px column shows sixteen at a
+   * time in a strip too narrow to tell a blurred face from a sharp one. The
+   * criteria, the order bar and the grid all live in the wide view; keeping a
+   * cramped copy here only invited working in the worse of the two.
+   */
   renderSort() {
     const t = this.tabs.sort;
     t.replaceChildren();
-    const f = this.state.filters;
     const analyzed = this.state.items.filter((i) => i.analyzed).length;
-
-    if (!analyzed) {
-      t.append(el('div', { class: 'banner warn' }, 'No thumbnails analysed yet. Start with the ', el('b', {}, 'Analyse'), ' tab — without it, only the date range and video length criteria work.'));
-    }
-
-    const modeRow = el(
-      'div',
-      { class: 'row' },
-      el('label', { class: 'switch' },
-        el('input', {
-          type: 'radio', name: 'mode', checked: f.mode === 'any',
-          onchange: () => { f.mode = 'any'; this.onFilterChange(); }
-        }), 'Any criterion'),
-      el('label', { class: 'switch' },
-        el('input', {
-          type: 'radio', name: 'mode', checked: f.mode === 'all',
-          onchange: () => { f.mode = 'all'; this.onFilterChange(); }
-        }), 'All criteria')
-    );
-
-    const list = el('div', { class: 'card' });
-    for (const crit of CRITERIA) list.append(this.buildCriterion(crit));
-
-    this.previewHeading = el('h2', {}, `Preview — ${nf(this.state.filtered.length)} item(s)`);
+    const active = Object.values(this.state.filters.enabled).filter(Boolean).length;
 
     put(
-
       t,
       this.buildCleanupScore(),
-      this.buildSortBar(),
+      analyzed
+        ? null
+        : el('div', { class: 'banner warn' },
+            'No thumbnails analysed yet. Start with the ', el('b', {}, 'Analyse'),
+            ' tab — without it, only the date range and video length criteria work.'),
       el('button', {
-        class: 'action primary wide', text: '⤢  Open full screen',
-        style: 'margin-bottom:16px',
-        title: 'Wide view: criteria left, thumbnails centre',
+        class: 'action primary wide', text: '⤢  Open the sorting view',
+        style: 'margin:4px 0 12px',
+        title: 'Criteria on the left, order above, thumbnails filling the width',
         onclick: () => this.openModal()
       }),
-      el('section', {}, el('h2', {}, 'Combine'), modeRow),
-      el('section', {}, el('h2', {}, 'Criteria'), list),
-      el('section', {}, this.previewHeading, this.buildPreview())
+      el('div', { class: 'muted' },
+        'Criteria, ordering and the thumbnails are all in there. It uses the full width, which is what judging photos needs.'),
+      el('div', { class: 'card', style: 'margin-top:12px' },
+        el('div', { class: 'card-title' }, 'Right now'),
+        el('div', { class: 'kpis' },
+          kpi(nf(active), 'criteria on'),
+          kpi(nf(this.state.filtered.length), 'matching'),
+          kpi(nf(this.state.selection.size), 'ticked')),
+        active
+          ? el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+              `Ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}".`)
+          : el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+              'No criterion is on yet, so nothing is selected.'))
     );
   }
 
@@ -1324,7 +1322,7 @@ export class Panel {
    * because the grid is one click away from handing a selection to Google
    * Photos — so the active button explains itself rather than just lighting up.
    */
-  buildSortBar() {
+  buildSortBar({ compact = false } = {}) {
     const f = this.state.filters;
     const row = el('div', { class: 'sorts' });
 
@@ -1343,10 +1341,10 @@ export class Panel {
       }));
     }
 
-    return el('section', {},
-      el('h2', {}, 'Order'),
-      row,
-      el('div', { class: 'muted tiny', text: SORTS[f.sort]?.hint || '' }));
+    const hint = el('div', { class: 'muted tiny', text: SORTS[f.sort]?.hint || '' });
+    return compact
+      ? el('div', { class: 'sortbar' }, row, hint)
+      : el('section', {}, el('h2', {}, 'Order'), row, hint);
   }
 
   /**
@@ -1584,51 +1582,8 @@ export class Panel {
     }
     const total = nf(this.state.filtered.length);
     const coches = nf(this.state.selection.size);
-    if (this.previewHeading) this.previewHeading.textContent = `Preview — ${total} item(s)`;
-    if (this.previewCount) this.previewCount.textContent = `${coches} ticked`;
     if (this.modalCount) this.modalCount.textContent = `${total} matching · ${coches} ticked`;
     if (this.footerSummary) this.footerSummary.replaceChildren(el('b', {}, coches), ' item(s) ticked');
-  }
-
-  buildPreview() {
-    const box = el('div', {});
-    const shown = this.state.filtered.slice(0, this.state.renderLimit);
-
-    if (!this.state.filtered.length) {
-      box.append(el('div', { class: 'muted' },
-        Object.values(this.state.filters.enabled).some(Boolean)
-          ? 'Nothing matches.'
-          : 'Enable at least one criterion.'));
-      return box;
-    }
-
-    this.previewCount = el('span', { class: 'muted', text: `${nf(this.state.selection.size)} ticked` });
-    box.append(
-      el('div', { class: 'row' },
-        el('button', {
-          class: 'action', text: 'Tick all',
-          onclick: () => { this.state.selection = new Set(this.state.filtered.map((i) => i.id)); this.renderAll(); }
-        }),
-        el('button', {
-          class: 'action', text: 'Untick all',
-          onclick: () => { this.state.selection = new Set(); this.renderAll(); }
-        }),
-        el('span', { class: 'spacer' }),
-        this.previewCount)
-    );
-
-    const grid = el('div', { class: 'grid' });
-    shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
-    box.append(grid);
-
-    if (this.state.filtered.length > shown.length) {
-      box.append(el('button', {
-        class: 'action wide', style: 'margin-top:8px',
-        text: `Show more (${nf(this.state.filtered.length - shown.length)} left)`,
-        onclick: () => { this.state.renderLimit += 240; this.renderAll(); }
-      }));
-    }
-    return box;
   }
 
   onFilterChange() {
@@ -1638,7 +1593,7 @@ export class Panel {
       cancelAnimationFrame(this.liveFrame);
       this.liveFrame = null;
     }
-    this.state.renderLimit = this.state.modalOpen ? 300 : 120;
+    this.state.renderLimit = 300;
     this.state.dupStale = false;
     this.recompute();
     this.persist();
@@ -2208,7 +2163,7 @@ export class Panel {
     this.state.filters = structuredClone(DEFAULT_FILTERS);
     this.state.people = { modelReady: false, groups: [], named: [], faceCount: 0, error: null, progress: null };
     this.state.selection = new Set();
-    this.state.renderLimit = 120;
+    this.state.renderLimit = 300;
     this.state.tab = 'scan';
     this.dupCache = null;
 
