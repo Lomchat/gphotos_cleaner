@@ -17,7 +17,8 @@ import { Analyzer } from '../content/analyze-client.js';
 import { Selector } from '../content/actions.js';
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
-  countPerCriterion, computeStats, CRITERION_LABELS
+  countPerCriterion, computeStats, CRITERION_LABELS,
+  SORTS, SORT_KEYS, groupSizeMap
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
 import { groupLabel } from '../analysis/cluster.js';
@@ -47,7 +48,8 @@ const DEFAULT_SETTINGS = {
   // 0 means no limit.
   maxPerRun: 0,
   analyzeInflight: 3,
-  scanOlderThanTs: null  // only handle items older than this date
+  scanOlderThanTs: null,  // only handle items older than this date
+  scanPeople: true       // read faces as part of the main run
 };
 
 /**
@@ -199,6 +201,22 @@ function nf(n) { return Number(n || 0).toLocaleString('en-US'); }
 
 /* --------------------------------------------------------------- helpers */
 
+/**
+ * Append children, ignoring the absent ones.
+ *
+ * `Node.append(null)` inserts the literal text "null" — it does not skip, the
+ * way `el()` does for its own children. Every optional block in this file goes
+ * through here so a section that has nothing to say stays silent instead of
+ * printing the word.
+ */
+function put(parent, ...children) {
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    parent.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return parent;
+}
+
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -248,6 +266,9 @@ export class Panel {
     this.dupCache = null;
     this.liveFrame = null;
     this.counterEls = new Map();
+    this.anchorIndex = null;
+    this.rangePreview = null;
+    this.shiftHeld = false;
   }
 
   /* ------------------------------------------------------------- montage */
@@ -269,6 +290,7 @@ export class Panel {
     }).observe(document.documentElement, { childList: true });
 
     await this.loadPersisted();
+    this.watchShift();
     this.build();
     await this.reload();
     this.renderAll();
@@ -326,7 +348,8 @@ export class Panel {
       title: 'Reset everything: catalogue, analyses, settings and filters.\nYour photos are untouched; only the analysis time is lost.',
       onclick: () => this.factoryReset()
     });
-    this.panel.append(
+    put(
+      this.panel,
       el(
         'header',
         {},
@@ -346,7 +369,8 @@ export class Panel {
       ['scan', 'Analyse'], ['sort', 'Sort'], ['people', 'People'],
       ['stats', 'Stats'], ['settings', 'Settings']
     ]) {
-      this.tabsNav.append(
+      put(
+        this.tabsNav,
         el('button', {
           text: label, 'data-tab': key, role: 'tab',
           onclick: () => { this.state.tab = key; this.renderAll(); }
@@ -435,7 +459,7 @@ export class Panel {
           : 'Enable at least one criterion on the left.'));
     } else {
       const grid = el('div', { class: 'grid' });
-      for (const item of shown) grid.append(this.buildThumb(item));
+      shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
       main.append(grid);
       if (this.state.filtered.length > shown.length) {
         main.append(el('button', {
@@ -478,18 +502,16 @@ export class Panel {
   }
 
   /** Tickable thumbnail, shared by the side preview and the modal. */
-  buildThumb(item) {
+  buildThumb(item, index = 0) {
     const on = this.state.selection.has(item.id);
     return el(
       'div',
       {
         class: `thumb${on ? ' on' : ''}${item.isVideo ? ' video' : ''}`,
+        'data-index': index,
         title: `${formatDate(item.ts, item.precision || 'day')}\n${(item.matched || []).map((m) => CRITERION_LABELS[m]).join(', ')}`,
-        onclick: () => {
-          if (this.state.selection.has(item.id)) this.state.selection.delete(item.id);
-          else this.state.selection.add(item.id);
-          this.renderAll();
-        }
+        onmouseenter: () => this.previewRange(index),
+        onclick: (ev) => this.pickThumb(item.id, index, ev.shiftKey)
       },
       item.url ? el('img', { src: item.url, loading: 'lazy', referrerPolicy: 'no-referrer' }) : null,
       el('span', { class: 'mark', text: on ? '✓' : '' }),
@@ -509,6 +531,97 @@ export class Panel {
       el('span', { class: 'tags' },
         (item.matched || []).slice(0, 3).map((m) => el('span', { text: CRITERION_LABELS[m] || m })))
     );
+  }
+
+  /**
+   * Tick one thumbnail, or a whole run of them with Shift.
+   *
+   * The anchor is the last plain click. Shift applies *the anchor's* state to
+   * the whole run rather than toggling each tile: dragging across a mixed
+   * selection and watching every tile flip is the behaviour nobody wants, and
+   * here a stray flip means a photo quietly joining a deletion list.
+   */
+  pickThumb(id, index, extend) {
+    const sel = this.state.selection;
+    const items = this.visibleItems();
+
+    if (extend && this.anchorIndex != null && items[this.anchorIndex]) {
+      const [from, to] = [this.anchorIndex, index].sort((a, b) => a - b);
+      const turnOn = sel.has(items[this.anchorIndex].id);
+      for (let i = from; i <= to; i++) {
+        const target = items[i];
+        if (!target) continue;
+        if (turnOn) sel.add(target.id);
+        else sel.delete(target.id);
+      }
+    } else {
+      if (sel.has(id)) sel.delete(id);
+      else sel.add(id);
+      this.anchorIndex = index;
+    }
+
+    this.rangePreview = null;
+    this.renderAll();
+  }
+
+  /**
+   * Outline what Shift-clicking here would take.
+   *
+   * Shown while the key is held, because a range that only reveals itself after
+   * the click is a range you discover by undoing it.
+   */
+  previewRange(index) {
+    if (!this.shiftHeld || this.anchorIndex == null) return;
+    const [from, to] = [this.anchorIndex, index].sort((a, b) => a - b);
+    this.rangePreview = { from, to };
+    this.paintRangePreview();
+  }
+
+  /**
+   * Paint the outline directly instead of re-rendering.
+   *
+   * The grid holds hundreds of tiles and this fires on every pointer move; a
+   * full render would leave the preview trailing the cursor it describes.
+   */
+  paintRangePreview() {
+    const range = this.rangePreview;
+    for (const node of this.shadow.querySelectorAll('.thumb')) {
+      const i = Number(node.dataset.index);
+      node.classList.toggle('ranged', !!range && i >= range.from && i <= range.to);
+    }
+  }
+
+  clearRangePreview() {
+    this.rangePreview = null;
+    this.paintRangePreview();
+  }
+
+  /**
+   * Track Shift on the document, not on the tiles.
+   *
+   * The key is usually pressed while the pointer already rests on a thumbnail,
+   * and a handler bound to the tile would never see it.
+   */
+  watchShift() {
+    const update = (ev) => {
+      const held = !!ev.shiftKey;
+      if (held === this.shiftHeld) return;
+      this.shiftHeld = held;
+      if (!held) this.clearRangePreview();
+    };
+    document.addEventListener('keydown', update, true);
+    document.addEventListener('keyup', update, true);
+    // A window that loses focus mid-press never delivers the keyup, which would
+    // leave an outline painted over a grid that no longer does what it shows.
+    window.addEventListener('blur', () => {
+      this.shiftHeld = false;
+      this.clearRangePreview();
+    });
+  }
+
+  /** The list the grid is showing — what a tile index refers to. */
+  visibleItems() {
+    return this.state.filtered;
   }
 
   toggle(open) {
@@ -622,7 +735,9 @@ export class Panel {
     this.syncBlockedCriteria();
     const dup = this.duplicateSelection();
     this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
-    const r = applyFilters(this.state.items, this.state.filters, dup);
+    const r = applyFilters(this.state.items, this.state.filters, dup, {
+      groupSizes: groupSizeMap(this.state.people.groups)
+    });
     this.state.filtered = r.items;
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
@@ -676,7 +791,9 @@ export class Panel {
     // disables the button while work remains.
     const pending = this.state.items.filter((i) => !i.analyzed && i.url).length;
 
-    t.append(
+    put(
+
+      t,
       this.buildHero(total, analyzed, pending),
       this.buildModelNote(),
       el(
@@ -705,7 +822,9 @@ export class Panel {
     this.analyzeBar = el('i');
     this.analyzeLog = el('div', { class: 'log' });
 
-    t.append(
+    put(
+
+      t,
       el(
         'section',
         {},
@@ -720,6 +839,7 @@ export class Panel {
 
           this.buildSinceControl(),
           this.buildLimitControl(),
+          this.buildPeopleOption(),
           this.buildPlanNote(pending),
           this.buildResumeNote(),
 
@@ -1132,8 +1252,11 @@ export class Panel {
 
     this.previewHeading = el('h2', {}, `Preview — ${nf(this.state.filtered.length)} item(s)`);
 
-    t.append(
+    put(
+
+      t,
       this.buildCleanupScore(),
+      this.buildSortBar(),
       el('button', {
         class: 'action primary wide', text: '⤢  Open full screen',
         style: 'margin-bottom:16px',
@@ -1144,6 +1267,86 @@ export class Panel {
       el('section', {}, el('h2', {}, 'Criteria'), list),
       el('section', {}, this.previewHeading, this.buildPreview())
     );
+  }
+
+  /**
+   * Whether the run also reads faces, and the one-time download that enables it.
+   *
+   * It lives here rather than in the People tab because this is where the work
+   * is started: a second pass the user has to remember to launch is a second
+   * pass that never runs. The download stays an explicit choice — the weights
+   * are licensed for non-commercial research use and cannot be bundled with an
+   * MIT extension, and it is the only thing this extension ever fetches that is
+   * not one of your photos.
+   */
+  buildPeopleOption() {
+    const s = this.state.settings;
+    const p = this.state.people;
+    const busy = !!this.state.busy;
+
+    if (!p.modelReady) {
+      return el('div', { class: 'card', style: 'margin-top:10px' },
+        el('label', { class: 'switch' },
+          el('input', { type: 'checkbox', checked: false, disabled: true }),
+          el('span', {}, 'Also group photos by person')),
+        el('div', { class: 'muted', style: 'margin-top:6px' },
+          'Needs a ', el('b', {}, '13 MB'),
+          ' recognition model — downloaded once, then kept in your browser. Not bundled: its weights are licensed for non-commercial research use and this extension is MIT.'),
+        p.progress && p.downloading
+          ? el('div', {},
+              el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
+              el('div', { class: 'muted tiny', text: p.progress.label }))
+          : null,
+        p.error ? el('div', { class: 'banner danger' }, p.error) : null,
+        el('button', {
+          class: 'action', style: 'margin-top:8px',
+          disabled: busy,
+          text: busy && p.downloading ? 'Downloading…' : 'Download the model',
+          onclick: () => this.downloadRecognitionModel()
+        }));
+    }
+
+    return el('div', { style: 'margin-top:10px' },
+      el('label', { class: 'switch' },
+        el('input', {
+          type: 'checkbox', checked: s.scanPeople, disabled: busy,
+          onchange: (e) => { s.scanPeople = e.target.checked; this.persist(); this.renderAll(); }
+        }),
+        el('span', {}, 'Also group photos by person'),
+        el('small', {}, 'adds a second read of photos containing a face')));
+  }
+
+  /**
+   * Order buttons above the preview.
+   *
+   * An order is a reason to look, not a filter: it never changes what is
+   * selected, only where it sits. That distinction is worth keeping visible,
+   * because the grid is one click away from handing a selection to Google
+   * Photos — so the active button explains itself rather than just lighting up.
+   */
+  buildSortBar() {
+    const f = this.state.filters;
+    const row = el('div', { class: 'sorts' });
+
+    for (const key of SORT_KEYS) {
+      const sort = SORTS[key];
+      // "Rarest people" ranks by how often each face appears elsewhere, which
+      // is meaningless until the People pass has produced groups. Shown and
+      // disabled rather than hidden: a button that vanishes reads as a bug.
+      const blocked = sort.needsPeople && !this.state.people.groups.length;
+      row.append(el('button', {
+        class: `sort${f.sort === key ? ' on' : ''}`,
+        text: sort.label,
+        disabled: blocked,
+        title: blocked ? 'Needs the People tab: read your photos there first.' : sort.hint,
+        onclick: () => { f.sort = key; this.onFilterChange(); }
+      }));
+    }
+
+    return el('section', {},
+      el('h2', {}, 'Order'),
+      row,
+      el('div', { class: 'muted tiny', text: SORTS[f.sort]?.hint || '' }));
   }
 
   /**
@@ -1286,8 +1489,12 @@ export class Panel {
       el('div', { class: 'hint' }, blocked || crit.hint),
       blocked
         ? el('button', {
-            class: 'action', text: 'Open the People tab',
-            onclick: () => { this.state.tab = 'people'; this.renderAll(); }
+            class: 'action',
+            text: this.state.people.modelReady ? 'Open the People tab' : 'Open the Analyse tab',
+            onclick: () => {
+              this.state.tab = this.state.people.modelReady ? 'people' : 'scan';
+              this.renderAll();
+            }
           })
         : controls
     );
@@ -1320,8 +1527,8 @@ export class Panel {
    */
   peopleBlockReason() {
     const p = this.state.people;
-    if (!p.modelReady) return 'Needs the recognition model — download it once in the People tab.';
-    if (!p.groups.length) return 'No people found yet. Read your photos in the People tab.';
+    if (!p.modelReady) return 'Needs the recognition model — download it once in the Analyse tab.';
+    if (!p.groups.length) return 'No people found yet. Run the analysis with "group by person" on.';
     if (!this.state.filters.personIds.length) return 'Tick at least one person in the People tab first.';
     return null;
   }
@@ -1351,7 +1558,9 @@ export class Panel {
       : this.duplicateSelection();
 
     this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
-    const r = applyFilters(this.state.items, this.state.filters, dup);
+    const r = applyFilters(this.state.items, this.state.filters, dup, {
+      groupSizes: groupSizeMap(this.state.people.groups)
+    });
     this.state.filtered = r.items;
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
@@ -1409,7 +1618,7 @@ export class Panel {
     );
 
     const grid = el('div', { class: 'grid' });
-    for (const item of shown) grid.append(this.buildThumb(item));
+    shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
     box.append(grid);
 
     if (this.state.filtered.length > shown.length) {
@@ -1454,7 +1663,9 @@ export class Panel {
     const p = this.state.people;
     const busy = this.state.busy === 'people';
 
-    t.append(
+    put(
+
+      t,
       el('div', { class: 'card' },
         el('div', { class: 'card-title' }, '👥 Group by person'),
         el('p', { class: 'muted' },
@@ -1474,7 +1685,9 @@ export class Panel {
     const eligible = peopleCandidates(this.state.items);
     const scanned = eligible.length - todo.length;
 
-    t.append(
+    put(
+
+      t,
       el('div', { class: 'card' },
         el('div', { class: 'card-title' }, 'Find faces'),
         el('p', { class: 'muted' },
@@ -1553,7 +1766,9 @@ export class Panel {
       );
     }
 
-    t.append(
+    put(
+
+      t,
       el('div', { class: 'card' },
         el('div', { class: 'card-title' }, `People (${nf(p.groups.length)})`),
         el('p', { class: 'muted' },
@@ -1620,10 +1835,32 @@ export class Panel {
     if (p.faceCount && !p.groups.length) await this.rebuildGroups({ quiet: true });
   }
 
+  /**
+   * Download progress, straight to the bar.
+   *
+   * Repainted in place rather than through a full render: the message arrives
+   * many times a second, and re-rendering the whole tab that often would fight
+   * with the download for the main thread.
+   */
+  onModelProgress({ received, total }) {
+    const p = this.state.people;
+    if (!p.downloading) return;
+    p.progress = {
+      ratio: total ? received / total : 0,
+      label: `${(received / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`
+    };
+    const bar = this.shadow.querySelector('.tab:not([hidden]) .progress i');
+    const text = this.shadow.querySelector('.tab:not([hidden]) .progress + .tiny');
+    if (bar) bar.style.width = pct(p.progress.ratio);
+    if (text) text.textContent = p.progress.label;
+    if (!bar) this.renderAll();
+  }
+
   async downloadRecognitionModel() {
     const p = this.state.people;
     this.state.busy = 'people';
     p.error = null;
+    p.downloading = true;
     p.progress = { ratio: 0, label: 'Starting…' };
     this.renderAll();
 
@@ -1641,36 +1878,57 @@ export class Panel {
     }
   }
 
-  async runPeopleScan() {
-    if (this.state.busy) {
+  /**
+   * Read faces and group them.
+   *
+   * `inline` marks the pass as a stage of the main run rather than its own job:
+   * it keeps the existing busy state and writes to the analysis log, so the
+   * whole thing reads as one operation with one progress bar.
+   */
+  async runPeopleScan({ inline = false, log = null } = {}) {
+    if (!inline && this.state.busy) {
       this.flashStatus('Another run is in progress', 'error', 4000);
-      return;
+      return 0;
     }
     const p = this.state.people;
-    const todo = pendingPeople(this.state.items);
+    if (!p.modelReady) return 0;
 
-    this.state.busy = 'people';
+    const todo = pendingPeople(this.state.items);
+    if (!todo.length) return 0;
+
+    if (!inline) this.state.busy = 'people';
     p.error = null;
     p.progress = { ratio: 0, label: `0 / ${nf(todo.length)}` };
+    if (log) this.log(log, `Reading faces in ${nf(todo.length)} photo(s)…`);
     this.renderAll();
 
     const totals = await scanFaces(todo, {
       send: (m) => this.send(m),
       onProgress: ({ done, total, faces }) => {
         p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)} · ${nf(faces)} face(s)` };
+        if (log) {
+          log.firstElementChild?.remove();
+          this.log(log, `Faces · ${nf(done)} / ${nf(total)} · ${nf(faces)} found`);
+        }
         this.renderPeople();
       }
     });
 
     if (totals.errors.length) p.error = totals.errors[0];
-    this.state.busy = null;
+    if (!inline) this.state.busy = null;
     p.progress = null;
-    this.flashStatus(
-      `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)` +
-      (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '')
-    );
+    if (log) {
+      this.log(log, `Faces done: ${nf(totals.faces)} in ${nf(totals.scanned)} photo(s)` +
+        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : ''), 'ok');
+    } else {
+      this.flashStatus(
+        `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)` +
+        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '')
+      );
+    }
     await this.reload();
-    await this.rebuildGroups();
+    await this.rebuildGroups({ quiet: inline });
+    return totals.faces;
   }
 
   async rebuildGroups({ quiet = false } = {}) {
@@ -1766,7 +2024,9 @@ export class Panel {
       return;
     }
 
-    t.append(
+    put(
+
+      t,
       el('section', {}, el('h2', {}, 'Overview'),
         el('div', { class: 'kpis' },
           kpi(nf(s.total), 'items'),
@@ -1846,7 +2106,9 @@ export class Panel {
           })),
         hint ? el('div', { class: 'hint', style: 'margin-left:0' }, hint) : null);
 
-    t.append(
+    put(
+
+      t,
       el('section', {}, el('h2', {}, 'Resume'),
         el('div', { class: 'card' },
           el('div', { class: 'muted' }, 'On a large library, bounding each run lets you work in slices without ever starting over: the position reached is remembered.'),
@@ -1988,7 +2250,8 @@ export class Panel {
 
     this.footerSummary = el('div', { class: 'summary' },
       el('b', {}, nf(n)), ' item(s) ticked');
-    this.footer.append(
+    put(
+      this.footer,
       this.footerSummary,
       el('div', { class: 'buttons' },
         el('button', {
@@ -2164,8 +2427,20 @@ export class Panel {
         this.log(anaLog, `Recovery done: ${nf(res2.done)} more images analysed.`, 'ok');
       }
 
+      // The people pass rides on the same run: it needs the face scores the
+      // analysis just produced, so it cannot start earlier, and asking the user
+      // to press a second button for a second wait would be a poor trade.
+      let peopleDone = 0;
+      if (s.scanPeople) {
+        await this.reload();
+        peopleDone = await this.runPeopleScan({ inline: true, log: anaLog });
+      }
+
       this.state.busy = null;
-      this.flashStatus(`Done · ${nf(anaStats.done)} images analysed`);
+      this.flashStatus(
+        `Done · ${nf(anaStats.done)} images analysed` +
+        (peopleDone ? ` · ${nf(peopleDone)} face(s)` : '')
+      );
     } catch (err) {
       this.log(scanLog, `Error: ${err.message}`, 'err');
       this.state.busy = null;

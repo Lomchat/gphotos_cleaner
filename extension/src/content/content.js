@@ -23,6 +23,12 @@
   let toggleRequested = false;
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    // Model download progress, relayed from the offscreen document. Fire and
+    // forget: it arrives many times a second and nothing waits on the reply.
+    if (msg?.type === 'PEOPLE_PROGRESS') {
+      panel?.onModelProgress?.(msg);
+      return false;
+    }
     if (msg?.type !== 'TOGGLE_PANEL') return false;
     if (panel) {
       panel.toggle();

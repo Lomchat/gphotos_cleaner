@@ -63,17 +63,37 @@ Two controls bound the work, and a banner states what the next run will do:
 criterion is exactly what that criterion alone would catch. **Open full screen**
 gives a wide grid with the criteria in a left column.
 
+A row of **order** buttons sits above the grid. An order never changes *what* is
+selected, only where it sits — it is a reason to look, not a filter:
+
+| Order | Puts first |
+|---|---|
+| Most suspicious | Photos tripping the most criteria at once |
+| Surely nobody | Where the detector is most confident no one is there |
+| Rarest people | People who barely appear elsewhere; your regulars sink |
+| Blurriest / Darkest | The worst of each |
+| Oldest / Newest | By date taken |
+
+Anything an order cannot judge — a video, an unanalysed photo — always sinks to
+the bottom rather than floating into the top, where people skim and tick.
+
+Click a thumbnail to tick it. **Shift-click** takes the whole run between it and
+your last click, and while Shift is held that run is outlined in dashed amber so
+you see what the click will take before you make it. The run adopts the anchor's
+state rather than toggling each tile, so a photo you deliberately spared never
+flips into the selection.
+
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
-**People** *(optional).* Re-reads photos that contain a face at a larger size,
-turns each face into an identity vector and groups them by person. Name a group
-and the name follows that person across rebuilds. Ticking people there turns on
-the **With / Without selected people** criteria in Sort; until then those two
-criteria stay disabled with the reason stated on each.
+**People** *(optional).* Enable **Also group photos by person** in the Analyse
+tab and each run additionally re-reads photos containing a face at a larger
+size, turns each face into an identity vector and groups them. The People tab is
+where you name the groups; a name follows its person across rebuilds. Ticking
+people there turns on the **With / Without selected people** criteria in Sort.
 
-It needs a 13 MB model, downloaded once on an explicit click. Nothing else in
-the extension depends on it.
+It needs a 13 MB model, downloaded once on an explicit click in the Analyse tab.
+Nothing else in the extension depends on it.
 
 ---
 
@@ -311,7 +331,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 283 tests, no external dependencies
+npm test        # 326 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

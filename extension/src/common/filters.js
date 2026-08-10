@@ -36,6 +36,7 @@ export const DEFAULT_FILTERS = {
   from: null,
   to: null,
   personIds: [],        // groups selected in the People tab
+  sort: 'suspicion',    // see SORTS
   mode: 'any'           // 'any' = union of criteria, 'all' = intersection
 };
 
@@ -235,7 +236,7 @@ export function countPerCriterion(items, filters, dupSelectable = NO_DUPES) {
  * @param {{selectable:Set, groups:Map, keepers:Set}} [precomputedDuplicates]
  *        already-computed grouping, to avoid redoing expensive work.
  */
-export function applyFilters(items, filters, precomputedDuplicates) {
+export function applyFilters(items, filters, precomputedDuplicates, context) {
   let { groups, keepers, selectable: dupSelectable } = precomputedDuplicates || {};
 
   if (!precomputedDuplicates) {
@@ -264,10 +265,128 @@ export function applyFilters(items, filters, precomputedDuplicates) {
     const hit = filters.mode === 'all' ? r.all : r.matched.length > 0;
     if (hit) out.push({ ...it, matched: r.matched });
   }
-  // Most suspicious first: the more criteria an item trips, the likelier it is
-  // genuinely worth removing.
-  out.sort((a, b) => b.matched.length - a.matched.length || (b.ts ?? 0) - (a.ts ?? 0));
+  sortItems(out, filters.sort, context);
   return { items: out, groups, keepers, activeCount };
+}
+
+/* ------------------------------------------------------------------ order */
+
+/**
+ * How confident we are that a photo has nobody in it, 0 = certainly someone.
+ *
+ * Videos and unanalysed items have no answer. They are given `null` and pushed
+ * to the end rather than treated as empty: sorting "surest that nobody is in
+ * it" must not put an unknown at the top, right where a user skims and ticks.
+ */
+export function peopleLikelihood(item) {
+  if (!item.features || item.isVideo) return null;
+  return item.features.faceScore ?? null;
+}
+
+/**
+ * How attached a photo is to people who matter, 0 = nobody recognised.
+ *
+ * The key is the *largest* group present, not the number of faces. Someone who
+ * shows up five hundred times is the reason to keep a photo, and one such face
+ * outweighs any number of strangers beside them. A face seen only once never
+ * forms a group at all, so its photo scores 0 and rises — which is the point:
+ * it is the likeliest thing in the library to be deletable.
+ */
+export function peopleAttachment(item, groupSizes) {
+  if (!Array.isArray(item.people)) return null;
+  let biggest = 0;
+  for (const id of item.people) biggest = Math.max(biggest, groupSizes.get(id) ?? 0);
+  return biggest;
+}
+
+/**
+ * The orders offered above the preview.
+ *
+ * Each is a *reason to look*, not a filter: they reorder what the criteria
+ * already selected. `key` returns null for items the order cannot judge, and
+ * those always sink to the bottom whichever direction is chosen — an item we
+ * know nothing about must never be presented as a confident answer.
+ */
+export const SORTS = {
+  suspicion: {
+    label: 'Most suspicious',
+    hint: 'The more criteria a photo trips, the likelier it is worth removing.',
+    key: (it) => it.matched?.length ?? 0,
+    dir: -1
+  },
+  noPeople: {
+    label: 'Surely nobody',
+    hint: 'Photos where the detector is most confident there is no one, first.',
+    key: peopleLikelihood,
+    dir: 1
+  },
+  rarePeople: {
+    label: 'Rarest people',
+    hint: 'Photos of people who barely appear elsewhere first; your regulars sink to the bottom.',
+    key: (it, ctx) => peopleAttachment(it, ctx.groupSizes),
+    dir: 1,
+    needsPeople: true
+  },
+  blurry: {
+    label: 'Blurriest',
+    hint: 'Softest images first.',
+    key: (it) => (it.isVideo ? null : it.features?.blurScore ?? null),
+    dir: -1
+  },
+  dark: {
+    label: 'Darkest',
+    hint: 'Darkest images first.',
+    key: (it) => (it.isVideo ? null : it.features?.darkScore ?? null),
+    dir: -1
+  },
+  oldest: {
+    label: 'Oldest',
+    hint: 'By date taken, oldest first.',
+    key: (it) => it.ts ?? null,
+    dir: 1
+  },
+  newest: {
+    label: 'Newest',
+    hint: 'By date taken, newest first.',
+    key: (it) => it.ts ?? null,
+    dir: -1
+  }
+};
+
+export const SORT_KEYS = Object.keys(SORTS);
+export const DEFAULT_SORT = 'suspicion';
+
+/**
+ * Order a list in place.
+ *
+ * Ties fall back to the date, then the id, so the grid never reshuffles between
+ * two renders of the same data — a moving grid under a cursor about to tick
+ * something is its own kind of hazard.
+ */
+export function sortItems(items, sortKey, context = {}) {
+  const sort = SORTS[sortKey] || SORTS[DEFAULT_SORT];
+  const ctx = { groupSizes: new Map(), ...context };
+  const keys = new Map(items.map((it) => [it.id, sort.key(it, ctx)]));
+
+  items.sort((a, b) => {
+    const ka = keys.get(a.id);
+    const kb = keys.get(b.id);
+    if (ka == null && kb == null) return tieBreak(a, b);
+    if (ka == null) return 1;
+    if (kb == null) return -1;
+    if (ka !== kb) return (ka - kb) * sort.dir;
+    return tieBreak(a, b);
+  });
+  return items;
+}
+
+function tieBreak(a, b) {
+  return (b.ts ?? 0) - (a.ts ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+/** Group id → number of faces in it, for the "rarest people" order. */
+export function groupSizeMap(groups) {
+  return new Map((groups || []).map((g) => [g.id, g.size]));
 }
 
 /* ------------------------------------------------------------ statistics */

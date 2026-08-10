@@ -517,6 +517,19 @@ select:focus-visible, input:focus-visible, button:focus-visible {
 .thumb:hover { transform: scale(1.03); z-index: 1; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity .2s; }
 .thumb.on { border-color: var(--amber); }
+
+/* What Shift-clicking would take. Dashed and inset so it reads as a promise
+   rather than a state — it must never be mistaken for an actual tick. */
+.thumb.ranged::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 2px dashed var(--amber);
+  border-radius: 6px;
+  pointer-events: none;
+  animation: rangepulse 1.1s ease-in-out infinite;
+}
+@keyframes rangepulse { 50% { opacity: .45; } }
 .thumb.on img { opacity: .74; }
 .thumb .mark {
   position: absolute; top: 4px; left: 4px;
@@ -710,6 +723,29 @@ footer .buttons button { flex: 1; }
 
 .muted { color: var(--text-faint); font-size: 11.5px; line-height: 1.55; }
 .tiny { font-size: 10.5px; margin-top: 5px; }
+
+/* ------------------------------------------------------------ sort bar */
+
+.sorts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.sorts button {
+  padding: 6px 11px;
+  font: 600 11px/1 var(--display);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.sorts button:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
+.sorts button.on {
+  color: var(--ink);
+  background: var(--grad);
+  border-color: transparent;
+}
+.sorts button:disabled { opacity: .35; cursor: not-allowed; }
 
 /* ------------------------------------------------------------- people tab */
 

@@ -10,6 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { CRITERIA, Panel } from '../src/ui/panel.js';
 import { PANEL_CSS } from '../src/ui/styles.js';
@@ -160,7 +161,7 @@ test('each reason the people criteria are blocked is distinct and actionable', (
   const ready = reason({ modelReady: true, groups: [{ id: 0 }] }, [0]);
 
   assert.match(noModel, /model/i);
-  assert.match(noGroups, /read/i);
+  assert.match(noGroups, /analysis/i);
   assert.match(noPick, /tick/i);
   assert.equal(ready, null);
   assert.equal(new Set([noModel, noGroups, noPick]).size, 3);
@@ -212,4 +213,16 @@ test('criteria that need no backend are untouched by the sync', () => {
   };
   fake.syncBlockedCriteria();
   assert.equal(filters.enabled.blurry, true);
+});
+
+/* ------------------------------------------------------------- rendering */
+
+test('optional blocks never print the word "null"', () => {
+  // Node.append(null) inserts the literal text "null" — it does not skip the
+  // way el() does for its own children. Every optional section in the panel is
+  // appended through put(), which does skip.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const direct = source.match(/^\s*(?:t|this\.\w+)\.append\($/gm) || [];
+  assert.equal(direct.length, 0,
+    `${direct.length} bare .append( call(s) remain; use put(target, ...) so absent blocks stay silent`);
 });
