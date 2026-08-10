@@ -368,6 +368,22 @@ banners, when a problem occurs, rather than in a panel nobody opens in time.
 | Missing dates | `parseDateFromText`, `HEADER_SELECTOR` |
 | "Checkbox not found" | `CHECKBOX_SELECTOR`, `findCheckbox` |
 
+### Waiting for images, not just for tiles
+
+Google Photos renders tiles first and their images second. Harvest in between
+and the item is recorded with no thumbnail, which can never be analysed — and
+repairing one means walking the whole grid again. So each stop waits for images
+before moving on, up to five seconds, aiming at 90% coverage.
+
+That wait has an early exit for the tail: the last image or two that never come.
+It used to fire after three quiet polls — about a third of a second, which is
+shorter than Google takes to deliver the *first* image deep in a large library.
+On a real run it triggered before anything had arrived and produced 1,836 items
+with no image out of 2,000. Quiet time is now measured in milliseconds rather
+than polls, and giving up early requires at least half the images to be in
+already: "none have arrived yet" means the page has not started, which is the
+opposite of "no more are coming".
+
 ### The "listed but never analysed" trap
 
 The nastiest failure, because it raises no error: listing finds items, the engine
@@ -388,7 +404,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 388 tests, no external dependencies
+npm test        # 397 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

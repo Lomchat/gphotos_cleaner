@@ -34,6 +34,9 @@ const DEFAULTS = {
   thumbTarget: 0.9,      // coverage aimed for before scrolling again
   thumbWaitMaxMs: 5000,  // maximum wait to get there
   thumbPollMs: 110,      // coverage polling (pricier than a plain count)
+  thumbStallMs: 1200,    // quiet time meaning "no more images are coming"
+  coverage: null,        // seam: how loaded the grid is, for tests
+  thumbGiveUpRatio: 0.5, // ...but only once at least half have arrived
   olderThanTs: null,     // only handle items older than this date
   seekStepRatio: 2.2,    // wider step while crossing the out-of-scope zone
   seekBacktrack: 1.6,    // step back when crossing the boundary
@@ -352,21 +355,43 @@ export class Scanner {
    * processed, exotic formats), and waiting for them would stall every round to
    * the ceiling. We also stop as soon as coverage stops improving.
    */
+  /**
+   * Wait for the images behind the tiles that were just rendered.
+   *
+   * Tiles arrive before their images, and harvesting in between records items
+   * with no thumbnail — the costliest defect here, because repairing one means
+   * walking the whole grid again.
+   *
+   * The early exit exists for the tail: the last image or two that will never
+   * come. It used to fire after three quiet polls, about a third of a second,
+   * which is shorter than Google takes to deliver the *first* image on a large
+   * library — so on a slow grid it triggered before anything had arrived and
+   * the five-second budget was never reached. Measured on a real run: 1,836 of
+   * 2,000 items harvested with no image at all.
+   *
+   * Two changes. Quiet time is counted in milliseconds rather than polls, so it
+   * does not depend on the polling rate. And giving up early requires most
+   * images to be in already: "none have arrived yet" means the page has not
+   * started, which is the opposite of "no more are coming".
+   */
   async waitForThumbs() {
     const started = Date.now();
     let best = -1;
-    let stalled = 0;
+    let lastGain = Date.now();
 
     while (Date.now() - started < this.opts.thumbWaitMaxMs) {
-      const cov = dom.thumbCoverage();
+      const cov = (this.opts.coverage || dom.thumbCoverage)();
       this.stats.thumbRatio = cov.ratio;
       if (cov.total === 0 || cov.ratio >= this.opts.thumbTarget) break;
 
       if (cov.ready > best) {
         best = cov.ready;
-        stalled = 0;
-      } else if (++stalled >= 3) {
-        break; // no more images arriving; stop insisting
+        lastGain = Date.now();
+      } else if (
+        cov.ratio >= this.opts.thumbGiveUpRatio &&
+        Date.now() - lastGain >= this.opts.thumbStallMs
+      ) {
+        break; // the tail is not coming; the rest is here
       }
       await sleep(this.opts.thumbPollMs);
     }
