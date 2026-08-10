@@ -271,6 +271,14 @@ export class Scanner {
       // preference that claims a speed-up should have to show it.
       rounds: this.stats.rounds,
       perRound: this.stats.rounds ? this.fresh.size / this.stats.rounds : 0,
+      // Where listing actually spends its time. These two respond to opposite
+      // fixes, which is why they are reported separately rather than summed:
+      //   waitMs      — settling the grid, roughly fixed per stop, so fewer
+      //                 stops (a wider viewport) makes it smaller
+      //   thumbWaitMs — waiting for images, roughly per tile, so fewer stops
+      //                 does nothing: the same images are waited for either way
+      waitMs: this.stats.waitMs,
+      thumbWaitMs: this.stats.thumbWaitMs,
       stillSeeking: this.window.seeking,
       reachedBottom,
       limitReached,

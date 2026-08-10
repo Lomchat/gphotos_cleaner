@@ -66,15 +66,30 @@ Two controls bound the work, and a banner states what the next run will do:
   so it keeps its size, and the zoom is restored when the run ends, fails, or the
   page goes away.
 
-  Two things worth knowing before turning it on. It only speeds up **listing**:
-  the analysis fetches thumbnails by URL in the background, and does not care
-  what is on screen. And the gain is not asserted anywhere — each run reports how
-  many items it listed per stop, so the setting can be judged on your own library
-  rather than on a claim.
+  It only speeds up **listing**: the analysis fetches thumbnails by URL in the
+  background and does not care what is on screen. And the gain is not asserted —
+  each run reports items listed per stop, plus where its waiting went, so the
+  setting is judged on your own library rather than on a claim.
 
-  CSS zoom was tried first and does not work: it enlarges the scroll container
-  (measured 775px → 3340px) but leaves `window.innerHeight` alone, and Google
-  Photos sizes its virtual window from the window. The tile count did not move.
+  **Which fix helps depends on that split**, and the two point opposite ways.
+  Settling the grid costs the same whatever is on screen, so a wider viewport
+  divides it. Waiting for images costs the same per image, so a wider viewport
+  just waits for more at once and changes nothing — there the answer is a lower
+  **Thumbnail wait** in Settings. The panel says which one dominated.
+
+**Two cheaper tricks that do not work**, tested on a real library so nobody
+tries them again:
+
+  - *Shrinking the tiles with CSS.* Google Photos positions every tile
+    absolutely from inline styles its own code computes
+    (`width: 348px; height: 232px; transform: translate3d(…)`). A CSS override
+    shrinks tiles visually while the virtualiser keeps rendering the same slice,
+    leaving gaps and listing nothing extra.
+  - *Enlarging the viewport without zooming.* CSS `zoom` on the page grew the
+    scroll container from 775px to 3340px and the tile count did not move. Nor
+    did overriding `window.innerHeight` and `documentElement.clientHeight` in
+    the page's own world. Google Photos decides what to render from observed
+    chunks, not from a height it reads back — only real browser zoom moves it.
 
 **2 · Sort.** The tab itself is a door: a summary and one button. The work
 happens in the wide view — criteria on the left, order buttons above, thumbnails
@@ -355,7 +370,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 348 tests, no external dependencies
+npm test        # 350 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

@@ -8,6 +8,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { Panel } from '../src/ui/panel.js';
 
 import {
   planResume, DateWindow, planThumbRepair, inheritDate, MAX_THUMB_ATTEMPTS
@@ -216,4 +218,29 @@ test('the resume point is never past the stored position', () => {
       assert.ok(r.startTop <= scrollTop, `startTop ${r.startTop} > cursor ${scrollTop}`);
     }
   }
+});
+
+/* ---------------------------------------------------------- wait split */
+
+test('the two waits are reported separately, never summed', () => {
+  // They respond to opposite fixes: settling is per stop, so a wider viewport
+  // divides it; waiting for images is per photo, so a wider viewport waits for
+  // more of them at once and changes nothing. Summing hides the only thing
+  // worth knowing.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  // The run() result is the one carrying `discovered`.
+  const start = source.indexOf('discovered: this.fresh.size');
+  assert.notEqual(start, -1, 'the run result was not found');
+  const returned = source.slice(start, source.indexOf('};', start));
+  assert.match(returned, /\bwaitMs:/, 'settle time must be reported');
+  assert.match(returned, /\bthumbWaitMs:/, 'image wait must be reported');
+});
+
+test('the advice points at the wait that actually dominated', () => {
+  const describe = Panel.prototype.describeWaits;
+  const settleBound = describe.call({}, { waitMs: 9000, thumbWaitMs: 1000 });
+  const imageBound = describe.call({}, { waitMs: 1000, thumbWaitMs: 9000 });
+  assert.match(settleBound, /zooming the page out/i);
+  assert.match(imageBound, /would not help/i);
+  assert.match(describe.call({}, { waitMs: 0, thumbWaitMs: 0 }), /No measurable/i);
 });

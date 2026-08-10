@@ -52,7 +52,8 @@ const DEFAULT_SETTINGS = {
   scanOlderThanTs: null,  // only handle items older than this date
   scanPeople: true,      // read faces as part of the main run
   scanZoom: 1,           // page zoom while listing; 1 = leave it alone
-  lastTilesPerStep: 0    // measured, so the setting can be judged not guessed
+  lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
+  lastWaitSplit: null    // {settle, thumbs} — which fix would actually help
 };
 
 /**
@@ -1276,6 +1277,29 @@ export class Panel {
   }
 
   /**
+   * Say where listing spent its waiting, and what that implies.
+   *
+   * The two waits respond to opposite fixes, so summing them would hide the
+   * only thing worth knowing. Settling the grid costs the same whatever is on
+   * screen, so a wider viewport divides it. Waiting for images costs the same
+   * per image, so a wider viewport just waits for more of them at once and
+   * changes nothing. Reporting the split turns "try zooming out" from a guess
+   * into a decision.
+   */
+  describeWaits(r) {
+    const settle = r.waitMs || 0;
+    const thumbs = r.thumbWaitMs || 0;
+    const total = settle + thumbs;
+    if (!total) return 'No measurable waiting while listing.';
+
+    const pct = (v) => `${Math.round((v / total) * 100)}%`;
+    const advice = settle > thumbs
+      ? 'Most of it is settling the grid, which is per stop — zooming the page out while listing would cut it.'
+      : 'Most of it is waiting for images, which is per photo — zooming out would not help; lower "Thumbnail wait" in Settings instead.';
+    return `Waited ${dur(Math.round(total / 1000))}: ${pct(settle)} settling, ${pct(thumbs)} on images. ${advice}`;
+  }
+
+  /**
    * Page zoom while listing.
    *
    * Google Photos renders exactly what fits the viewport and nothing beyond it,
@@ -1304,6 +1328,18 @@ export class Panel {
     }
 
     const measured = this.state.settings.lastTilesPerStep;
+    const split = this.state.settings.lastWaitSplit;
+    // Whether this setting is worth turning on is a measured question, so the
+    // last run's answer sits next to the buttons rather than in a log.
+    let verdict = null;
+    if (split && (split.settle + split.thumbs) > 0) {
+      const total = split.settle + split.thumbs;
+      const share = Math.round((split.settle / total) * 100);
+      verdict = share > 50
+        ? `Last run spent ${share}% of its waiting on settling the grid — that is the part zooming out divides.`
+        : `Last run spent ${100 - share}% of its waiting on images, which is per photo. Zooming out would change little here; lower "Thumbnail wait" in Settings instead.`;
+    }
+
     return el('div', { style: 'margin-top:12px' },
       el('div', { class: 'muted' }, 'Zoom the page out while listing:'),
       row,
@@ -1313,7 +1349,8 @@ export class Panel {
           : 'Listing stops once per screenful, and each stop waits for the grid to settle.'),
       measured
         ? el('div', { class: 'muted tiny', text: `Last run listed ${nf(Math.round(measured))} item(s) per stop.` })
-        : null);
+        : null,
+      verdict ? el('div', { class: 'muted tiny', text: verdict }) : null);
   }
 
   /**
@@ -2379,9 +2416,14 @@ export class Panel {
         }
         if (scanResult.perRound) {
         this.state.settings.lastTilesPerStep = scanResult.perRound;
+        this.state.settings.lastWaitSplit = {
+          settle: scanResult.waitMs || 0,
+          thumbs: scanResult.thumbWaitMs || 0
+        };
         this.persist();
         this.log(scanLog,
           `${nf(Math.round(scanResult.perRound))} item(s) per stop over ${nf(scanResult.rounds)} stop(s).`);
+        this.log(scanLog, this.describeWaits(scanResult));
       }
       if (scanResult.noUrl) {
           this.log(scanLog, `${nf(scanResult.noUrl)} item(s) seen before their thumbnail arrived — run again to recover them.`, 'err');
