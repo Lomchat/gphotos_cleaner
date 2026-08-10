@@ -120,16 +120,17 @@ flips into the selection.
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
-**People** *(optional).* Everything that *runs* lives in the Analyse tab: the
-one-time model download, the **Also group photos by person** switch, and a
-catch-up button for photos measured before you turned it on. With the switch on,
-each run additionally re-reads photos containing a face at a larger size, turns
-each face into an identity vector and groups them.
+**Grouping by person** *(optional).* Everything that *runs* lives in the Analyse
+tab: the one-time model download, the **Also group photos by person** switch,
+and a catch-up button for photos measured before you turned it on. With the
+switch on, each run additionally re-reads photos containing a face at a larger
+size, turns each face into an identity vector and groups them.
 
-The People tab is where you *look*: name the groups, and tick the ones you care
-about to turn on the **With / Without selected people** criteria in Sort. A name
-follows its person across rebuilds. Nothing there starts a job — a second pass
-you have to remember to launch is a second pass that never runs.
+The people themselves appear in the sorting view, directly under the **With /
+Without selected people** criteria they parameterise — tick who you mean, name
+them if you like, and the name follows that person across rebuilds. There is no
+separate tab: picking who you mean belongs next to the box you just ticked, and
+a second pass you have to remember to launch is a second pass that never runs.
 
 It needs a 13 MB model, downloaded once on an explicit click. Nothing else in
 the extension depends on it.
@@ -370,7 +371,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 350 tests, no external dependencies
+npm test        # 353 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

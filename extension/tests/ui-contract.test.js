@@ -144,9 +144,11 @@ test('criteria that work on the thumbnail alone are not flagged', () => {
   assert.ok(local.includes('duplicates'));
 });
 
-test('every criterion needing the People pass says so in its hint', () => {
+test('every criterion needing the People pass explains itself', () => {
+  // There is no tab to send anyone to any more: the picker sits directly under
+  // these criteria, so the hint has to stand on its own.
   for (const crit of CRITERIA.filter((c) => c.needsPeople)) {
-    assert.match(crit.hint, /people/i, `${crit.key} does not point at the People tab`);
+    assert.ok(crit.hint.length > 30, `${crit.key} has no real explanation`);
   }
 });
 
@@ -249,15 +251,30 @@ function methodBody(source, name) {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
-test('nothing in the People tab starts a run', () => {
+test('the people picker starts no run of its own', () => {
   // Reading photos belongs with the analysis that feeds it, in one place, so
   // there is never a second pass to remember.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
-  const tab = methodBody(source, 'renderPeople');
-  assert.equal(/runPeopleScan\(/.test(tab), false,
-    'the face pass is started from the Analyse tab, not from People');
-  assert.equal(/downloadRecognitionModel\(/.test(tab), false,
+  const section = methodBody(source, 'buildPeopleSection');
+  assert.equal(/runPeopleScan\(/.test(section), false,
+    'the face pass is started from the Analyse tab');
+  assert.equal(/downloadRecognitionModel\(/.test(section), false,
     'the model download lives in the Analyse tab');
+});
+
+test('there is no People tab left to reach', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  assert.equal(/renderPeople\s*\(/.test(source), false, 'renderPeople should be gone');
+  assert.equal(/tabs\.people/.test(source), false, 'the tab node should be gone');
+  assert.equal(/'people', 'People'/.test(source), false, 'the nav entry should be gone');
+});
+
+test('the picker is rendered beside the criteria it parameterises', () => {
+  // Orphaned, the two people criteria could be ticked with no way to say who.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const modal = methodBody(source, 'renderModal');
+  assert.match(modal, /buildPeopleSection\(\)/,
+    'the sorting view must render the people picker');
 });
 
 test('the Analyse tab is where the model and the face pass are offered', () => {
@@ -284,4 +301,15 @@ test('no doc comment is left unclosed', () => {
   const opened = (source.match(/\/\*/g) || []).length;
   const closed = (source.match(/\*\//g) || []).length;
   assert.equal(opened, closed, 'an unclosed comment hides everything after it');
+});
+
+test('a blocked criterion only offers a way out when the fix is elsewhere', () => {
+  // When the answer is "tick someone", the picker sits directly below. A button
+  // sending the user to another tab would be worse than no button at all.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const build = methodBody(source, 'buildCriterion');
+  const gate = build.indexOf('people.groups.length');
+  const button = build.indexOf('Open the Analyse tab');
+  assert.notEqual(gate, -1, 'the button must be gated on whether any people exist');
+  assert.ok(gate < button, 'the gate must come before the button it guards');
 });

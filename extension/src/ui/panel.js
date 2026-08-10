@@ -180,7 +180,7 @@ export const CRITERIA = [
     key: 'withPerson',
     icon: '👥',
     label: 'With selected people',
-    hint: 'Needs the People tab. Matches photos containing anyone ticked there.',
+    hint: 'Matches photos containing anyone ticked in the People list, below.',
     needsPeople: true,
     controls: []
   },
@@ -188,7 +188,7 @@ export const CRITERIA = [
     key: 'withoutPerson',
     icon: '🚫',
     label: 'Without selected people',
-    hint: 'Needs the People tab. Photos not read yet never match, so "not analysed" is never mistaken for "absent".',
+    hint: 'Photos not read yet never match, so "not analysed" is never mistaken for "absent".',
     needsPeople: true,
     controls: []
   }
@@ -374,8 +374,7 @@ export class Panel {
 
     this.tabsNav = el('nav', {});
     for (const [key, label] of [
-      ['scan', 'Analyse'], ['sort', 'Sort'], ['people', 'People'],
-      ['stats', 'Stats'], ['settings', 'Settings']
+      ['scan', 'Analyse'], ['sort', 'Sort'], ['stats', 'Stats'], ['settings', 'Settings']
     ]) {
       put(
         this.tabsNav,
@@ -391,7 +390,6 @@ export class Panel {
     this.tabs = {
       scan: el('div', { class: 'tab' }),
       sort: el('div', { class: 'tab' }),
-      people: el('div', { class: 'tab' }),
       stats: el('div', { class: 'tab' }),
       settings: el('div', { class: 'tab' })
     };
@@ -458,6 +456,7 @@ export class Panel {
         })),
       el('h3', {}, 'Criteria'));
     for (const crit of CRITERIA) side.append(this.buildCriterion(crit));
+    put(side, this.buildPeopleSection());
 
     const main = el('div', { class: 'main' });
     // The order bar sits above the grid it reorders, not in the side column
@@ -778,7 +777,6 @@ export class Panel {
 
     this.renderScan();
     this.renderSort();
-    this.renderPeople();
     this.renderStats();
     this.renderSettings();
     this.renderFooter();
@@ -1356,7 +1354,7 @@ export class Panel {
   /**
    * Whether the run also reads faces, and the one-time download that enables it.
    *
-   * It lives here rather than in the People tab because this is where the work
+   * It lives here because this is where the work
    * is started: a second pass the user has to remember to launch is a second
    * pass that never runs. The download stays an explicit choice — the weights
    * are licensed for non-commercial research use and cannot be bundled with an
@@ -1417,7 +1415,7 @@ export class Panel {
           })
         : el('div', { class: 'muted tiny', style: 'margin-top:6px' },
             p.faceCount
-              ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Manage them in the People tab.`
+              ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Pick them in the sorting view.`
               : 'Every analysed photo with a face has been read.'));
   }
 
@@ -1443,7 +1441,7 @@ export class Panel {
         class: `sort${f.sort === key ? ' on' : ''}`,
         text: sort.label,
         disabled: blocked,
-        title: blocked ? 'Needs the People tab: read your photos there first.' : sort.hint,
+        title: blocked ? 'Needs people: run the analysis with grouping switched on.' : sort.hint,
         onclick: () => { f.sort = key; this.onFilterChange(); }
       }));
     }
@@ -1592,15 +1590,17 @@ export class Panel {
         crit.label,
         counter),
       el('div', { class: 'hint' }, blocked || crit.hint),
+      // Only offer a way out when the fix is somewhere else. When the answer is
+      // "pick someone", the list is directly below and a button sending the
+      // user to another tab would be worse than no button at all.
       blocked
-        ? el('button', {
-            class: 'action',
-            text: this.state.people.modelReady ? 'Open the People tab' : 'Open the Analyse tab',
-            onclick: () => {
-              this.state.tab = this.state.people.modelReady ? 'people' : 'scan';
-              this.renderAll();
-            }
-          })
+        ? (this.state.people.groups.length
+            ? null
+            : el('button', {
+                class: 'action',
+                text: 'Open the Analyse tab',
+                onclick: () => { this.state.tab = 'scan'; this.renderAll(); }
+              }))
         : controls
     );
   }
@@ -1633,8 +1633,8 @@ export class Panel {
   peopleBlockReason() {
     const p = this.state.people;
     if (!p.modelReady) return 'Needs the recognition model — download it once in the Analyse tab.';
-    if (!p.groups.length) return 'No people found yet. Run the analysis with "group by person" on.';
-    if (!this.state.filters.personIds.length) return 'Tick at least one person in the People tab first.';
+    if (!p.groups.length) return 'No people found yet. Run the analysis with grouping switched on.';
+    if (!this.state.filters.personIds.length) return 'Tick at least one person in the list below.';
     return null;
   }
 
@@ -1709,45 +1709,25 @@ export class Panel {
   /* ------------------------------------------------------------ onglet 3 */
 
   /**
-   * People tab.
+   * The people picker, shown beside the criteria that use it.
    *
-   * A second pass over the library: photos the main analysis already believes
-   * contain a face are re-fetched at a larger rendition, each face is turned
-   * into an identity vector, and the vectors are grouped.
-   *
-   * It costs one download the user has to agree to. The recognition weights are
-   * licensed for non-commercial research use, so they cannot ship inside an MIT
-   * repository — the tab says so plainly rather than fetching 13 MB quietly.
+   * It sits in the sorting view rather than in a tab of its own because it is
+   * not a place to go: it parameterises two criteria, and picking who you mean
+   * belongs next to the box you just ticked. Nothing here starts work — reading
+   * photos happens during the analysis that feeds it, so there is never a
+   * second run to remember.
    */
-  renderPeople() {
-    const t = this.tabs.people;
-    t.replaceChildren();
+  buildPeopleSection() {
     const p = this.state.people;
-    const busy = this.state.busy === 'people';
-
-    put(
-
-      t,
-      el('div', { class: 'card' },
-        el('div', { class: 'card-title' }, '👥 Group by person'),
-        el('p', { class: 'muted' },
-          'The analysis can tell a face is there. This tells you whose. Photos with a face are re-read at ',
-          el('b', {}, `${PEOPLE_RENDER_PX}px`),
-          ' — identity needs pixels a thumbnail does not carry — then grouped by person, so "every photo without Grandma" becomes a filter. Everything runs in your browser.'))
-    );
-
-    /* --------------------------------------------------------- groups */
+    const busy = !!this.state.busy;
 
     if (!p.groups.length) {
-      // Nothing here starts work. Reading photos belongs with the analysis that
-      // feeds it, in one place, so there is never a second run to remember.
-      t.append(el('div', { class: 'banner info' },
+      return el('div', { class: 'muted tiny', style: 'margin-top:10px' },
         !p.modelReady
-          ? 'Turn on "Also group photos by person" in the Analyse tab, then run the analysis.'
+          ? 'People: switch on "Also group photos by person" in Analyse, then run it.'
           : p.faceCount
-            ? `${nf(p.faceCount)} face(s) found, no group yet. Someone has to appear in at least two photos to be recognised as a person.`
-            : 'Run the analysis with "group by person" on to see people here.'));
-      return;
+            ? `${nf(p.faceCount)} face(s) found, no group yet — someone has to appear in at least two photos to be recognised.`
+            : 'People: run the analysis with grouping switched on.');
     }
 
     const selected = new Set(this.state.filters.personIds);
@@ -1764,7 +1744,7 @@ export class Panel {
         el('div', { class: `person${on ? ' on' : ''}` },
           el('div', {
             class: 'faces',
-            title: on ? 'Click to unselect' : 'Click to select for the people filters',
+            title: on ? 'Click to unselect' : 'Click to select for the people criteria',
             onclick: () => this.togglePerson(group.id)
           }, covers.length
             ? covers.map((i) => el('img', { src: i.url, loading: 'lazy', referrerPolicy: 'no-referrer' }))
@@ -1778,7 +1758,7 @@ export class Panel {
             el('span', { text: `${nf(group.size)} face(s)` }),
             // Spread is the merge signal: a wide group is the one likeliest to
             // hold two people, and that is exactly the case where acting on the
-            // filter deletes the wrong person's photos.
+            // criterion deletes the wrong person's photos.
             group.spread > 0.3
               ? el('span', { class: 'warn', title: `Internal spread ${group.spread}`, text: 'mixed?' })
               : null),
@@ -1786,38 +1766,28 @@ export class Panel {
       );
     }
 
-    put(
-
-      t,
-      el('div', { class: 'card' },
-        el('div', { class: 'card-title' }, `People (${nf(p.groups.length)})`),
-        el('p', { class: 'muted' },
-          'Tick the people you care about, then use the "With / Without selected people" criteria in Sort. Names are kept when groups are rebuilt.'),
-        list,
-        p.error ? el('div', { class: 'banner danger' }, p.error) : null,
-        el('div', { class: 'buttons' },
-          el('button', {
-            class: 'action', text: 'Clear selection', disabled: !selected.size,
-            onclick: () => { this.state.filters.personIds = []; this.applyPersonFilters(); }
-          }),
-          el('button', {
-            class: 'action', text: 'Go to Sort',
-            onclick: () => { this.state.tab = 'sort'; this.renderAll(); }
-          })),
-        el('div', { class: 'buttons', style: 'margin-top:8px' },
-          el('button', {
-            class: 'action', disabled: busy,
-            text: 'Rebuild groups',
-            title: 'Group every known face again from scratch',
-            onclick: () => this.rebuildGroups()
-          }),
-          el('button', {
-            class: 'action danger', disabled: busy,
-            text: 'Forget faces',
-            title: 'Drop every face and group; the model stays downloaded',
-            onclick: () => this.clearPeopleData()
-          })))
-    );
+    return el('div', { style: 'margin-top:6px' },
+      el('h3', {}, `People (${nf(p.groups.length)})`),
+      el('div', { class: 'muted tiny' },
+        'Tick who you mean, then use the two people criteria above. Names survive a rebuild.'),
+      list,
+      p.error ? el('div', { class: 'banner danger' }, p.error) : null,
+      el('div', { class: 'buttons' },
+        el('button', {
+          class: 'action', text: 'Clear', disabled: !selected.size,
+          title: 'Unselect every person',
+          onclick: () => { this.state.filters.personIds = []; this.applyPersonFilters(); }
+        }),
+        el('button', {
+          class: 'action', disabled: busy, text: 'Rebuild',
+          title: 'Group every known face again from scratch',
+          onclick: () => this.rebuildGroups()
+        }),
+        el('button', {
+          class: 'action danger', disabled: busy, text: 'Forget',
+          title: 'Drop every face and group; the model stays downloaded',
+          onclick: () => this.clearPeopleData()
+        })));
   }
 
   /* ---------------------------------------------------- people actions */
@@ -1913,7 +1883,8 @@ export class Panel {
           log.firstElementChild?.remove();
           this.log(log, `Faces · ${nf(done)} / ${nf(total)} · ${nf(faces)} found`);
         }
-        this.renderPeople();
+        // Progress belongs to the Analyse tab now; repaint only that.
+        this.renderScan();
       }
     });
 
