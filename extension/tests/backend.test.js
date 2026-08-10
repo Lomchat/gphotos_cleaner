@@ -377,3 +377,28 @@ test('without a fetchData callback the old behaviour is unchanged', async () => 
   assert.equal(calls.length, 1);
   assert.equal(totals.failed, 1);
 });
+
+/* ----------------------------------------------------- rendition size */
+
+test('the backend asks for a bigger rendition than the local analysis uses', () => {
+  // Identity needs pixels a 176px thumbnail does not carry. Measured on a photo
+  // of seven strangers, the closest different-person pair sits at 0.670 with
+  // 9-13px faces and 0.804 with 28-35px ones, against a 0.55 threshold.
+  assert.ok(DEFAULT_BACKEND.thumbSize >= 384,
+    'too small a rendition halves the margin before two people merge');
+});
+
+test('only the id and the enlarged URL are sent, never the fallback address', async () => {
+  const calls = fakeFetch({ '/analyse': okBatch });
+  await analyse(CFG, [{ photoId: 'p1', url: 'https://x/1=w512-h512', sourceUrl: 'https://x/1=w176-h176' }]);
+  assert.deepEqual(calls[0].body.items, [{ photoId: 'p1', url: 'https://x/1=w512-h512' }]);
+});
+
+test('the fallback is handed the whole item so it can choose the address', async () => {
+  fakeFetch({ '/analyse': { body: { analysed: [], failed: [{ photoId: 'p1' }], skipped: [] } } });
+  let seen = null;
+  await analyse(CFG, [{ photoId: 'p1', url: 'big', sourceUrl: 'small' }], {
+    fetchData: async (item) => { seen = item; return null; }
+  });
+  assert.equal(seen.sourceUrl, 'small');
+});

@@ -1657,7 +1657,17 @@ export class Panel {
     const p = this.state.people;
     const items = this.state.items
       .filter((i) => i.url && !i.isVideo)
-      .map((i) => ({ photoId: i.id, url: i.url }));
+      .map((i) => ({
+        photoId: i.id,
+        // Ask Google for a bigger rendition than the catalogue holds: identity
+        // needs pixels the 176px thumbnail does not have.
+        url: dom.withThumbSize(i.url, cfg.thumbSize || DEFAULT_BACKEND.thumbSize),
+        // The fallback reads the catalogue URL instead, not the enlarged one:
+        // if the big rendition is what the backend choked on, asking the page
+        // for that same address would fail again. The catalogue URL is the one
+        // the grid already displays, so it is known to load.
+        sourceUrl: i.url
+      }));
 
     this.state.busy = 'people';
     p.error = null;
@@ -1667,7 +1677,7 @@ export class Panel {
     let totals;
     try {
       totals = await backend.analyse(cfg, items, {
-        fetchData: (item) => this.thumbAsBase64(item.url),
+        fetchData: (item) => this.thumbAsBase64(item.sourceUrl || item.url),
         onBatch: ({ done, total }) => {
           p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)}` };
           this.renderPeople();

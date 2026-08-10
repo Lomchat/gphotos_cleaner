@@ -98,6 +98,12 @@ All measurements are taken on the thumbnail, not the original file.
 | **Long videos** | Duration read from the tile | Good (duration stands in for file size, which Google does not expose) |
 | **A given person** | ArcFace embeddings + DBSCAN, optional local backend | Good — measured separation margin +0.53 between same and different people |
 
+The backend asks Google for a 512px rendition rather than reusing the 176px
+thumbnail. Identity needs the pixels: on a photo of seven strangers, the closest
+different-person pair sits at 0.670 with 9-13px faces and 0.804 with 28-35px
+ones, against a 0.55 grouping threshold. Both work; the larger one leaves twice
+the margin before two people merge into one group.
+
 ### People detection
 
 Chrome exposes no usable face detector — the `FaceDetector` API sits behind an
@@ -293,7 +299,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test                          # 256 tests, no external dependencies
+npm test                          # 261 tests, no external dependencies
 
 cd ..
 python -m pytest backend/tests -q  # 128 tests (11 skip without the large model)

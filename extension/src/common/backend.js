@@ -14,7 +14,19 @@
 export const DEFAULT_BACKEND = {
   enabled: false,
   url: 'http://127.0.0.1:8765',
-  token: ''
+  token: '',
+  // Larger than the 176px the in-browser analysis uses. There, transfer is the
+  // dominant cost; here the backend fetches from Google itself and spends ~38ms
+  // per photo on inference, so bytes are free by comparison.
+  //
+  // It buys margin where it matters. Measured on a photo of seven strangers,
+  // the closest pair of different people sits at:
+  //   176px (faces 9-13px)  0.670
+  //   512px (faces 28-35px) 0.804
+  // Both clear the 0.55 grouping threshold, but 176px clears it by 0.12 and
+  // 512px by 0.25 — and a group that merges two people is the failure that
+  // gets someone else's photos deleted.
+  thumbSize: 512
 };
 
 export const BATCH_SIZE = 100;

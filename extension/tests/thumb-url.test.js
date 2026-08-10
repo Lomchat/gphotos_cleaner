@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isGoogleImageUrl, withThumbSize } from '../src/content/dom-adapter.js';
+import { DEFAULT_BACKEND } from '../src/common/backend.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -126,4 +127,21 @@ test('every recognised host is covered by a manifest permission', () => {
       `${hostname} is recognised by extraction but missing from host_permissions`
     );
   }
+});
+
+test('the backend rendition size produces a valid Google URL', () => {
+  // The People tab rewrites each catalogue URL to a larger size before sending
+  // it. A malformed rewrite means the backend fetches nothing and the whole
+  // feature silently finds no faces.
+  const catalogued = withThumbSize('https://lh3.googleusercontent.com/abc=w176-h176-no', 176);
+  const forBackend = withThumbSize(catalogued, DEFAULT_BACKEND.thumbSize);
+  assert.match(forBackend, /=w512-h512/);
+  assert.equal(isGoogleImageUrl(forBackend), true);
+});
+
+test('resizing twice does not stack size suffixes', () => {
+  const once = withThumbSize('https://lh3.googleusercontent.com/abc=w176-h176-no', 512);
+  const twice = withThumbSize(once, 512);
+  assert.equal(twice, once);
+  assert.equal((twice.match(/=w/g) || []).length, 1);
 });
