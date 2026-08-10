@@ -36,13 +36,36 @@ export const MERGE_RATIO = 0.8;
 export const DEFAULT_MIN_SIZE = 2;
 
 /**
- * Scale rows to unit length, in place where possible.
- *
- * ArcFace is trained with an angular margin: only direction carries identity.
- * Skipping this makes cosine distance depend on vector length, and brightly lit
- * faces drift away from dim ones for no reason at all.
+ * Coerce whatever arrived into a usable Float32Array, or refuse loudly.
  */
-export function normalise(vector) {
+export function toVector(value) {
+  if (value instanceof Float32Array) return value;
+  if (Array.isArray(value)) return Float32Array.from(value);
+
+  // A Float32Array that has crossed chrome.runtime messaging arrives as
+  // {"0": .., "1": ..}: JSON, not structured clone. Its numbers are intact, so
+  // it is rebuilt rather than rejected — but see the throw below, which is what
+  // stops any *other* shape from quietly behaving like a zero-length vector.
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length && keys.every((k) => /^\d+$/.test(k))) {
+      const out = new Float32Array(keys.length);
+      for (let i = 0; i < keys.length; i++) out[i] = Number(value[i]) || 0;
+      return out;
+    }
+  }
+  throw new TypeError('unusable face vector: expected numbers, got ' + typeof value);
+}
+
+/**
+ * Project onto the unit sphere.
+ *
+ * ArcFace is trained with an angular margin, so only direction carries
+ * identity. Skipping this makes cosine distance depend on vector length, and
+ * brightly lit faces drift away from dim ones for no reason at all.
+ */
+export function normalise(input) {
+  const vector = toVector(input);
   let sum = 0;
   for (let i = 0; i < vector.length; i++) sum += vector[i] * vector[i];
   const norm = Math.sqrt(sum);
@@ -52,8 +75,18 @@ export function normalise(vector) {
   return out;
 }
 
-/** Cosine distance between two unit vectors, in [0, 2]. */
+/**
+ * Cosine distance between two unit vectors, in [0, 2].
+ *
+ * Both sides are checked, because a vector of no usable length would make every
+ * pair sit exactly 1 apart — further than the grouping threshold, so every face
+ * would become its own singleton and be dropped. The symptom is zero people
+ * from a library full of them, with nothing logged.
+ */
 export function distance(a, b) {
+  if (!a?.length || !b?.length) {
+    throw new TypeError('cannot measure a distance against a zero-length vector');
+  }
   let dot = 0;
   for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
   return 1 - Math.min(1, Math.max(-1, dot));
@@ -70,8 +103,12 @@ export function distance(a, b) {
 export function clusterFaces(faces, { eps = DEFAULT_EPS, minSize = DEFAULT_MIN_SIZE } = {}) {
   if (!faces.length) return { groups: [], ungrouped: [] };
 
-  const dim = faces[0].vector.length;
+  // Coerce first, then measure: the raw value may have crossed a JSON boundary
+  // and carry no length of its own, and a dim of undefined would quietly make
+  // every merged centroid an empty array.
   const units = faces.map((f) => normalise(f.vector));
+  const dim = units[0].length;
+  if (!dim) throw new TypeError('face vectors have no length; nothing can be grouped');
 
   // ---- assign: one pass, each face against the centroids so far -----------
   const clusters = [];

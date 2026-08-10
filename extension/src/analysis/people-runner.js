@@ -108,7 +108,11 @@ export async function analysePhoto(item) {
       if (faceWidthPx(face.box, bitmap.width) < MIN_FACE_PX) { skipped++; continue; }
       const vector = await embed(facePatch(bitmap, face.box));
       if (!vector) return { id: item.id, ok: false, error: 'recognition unavailable' };
-      faces.push({ box: face.box, score: face.score, vector });
+      // Plain array, not the Float32Array: the reply travels over
+      // chrome.runtime messaging, which serialises to JSON rather than
+      // structured-cloning. A typed array arrives there as {"0": .., "1": ..},
+      // with no length — and every distance computed from it comes out as 1.
+      faces.push({ box: face.box, score: face.score, vector: Array.from(vector) });
     }
 
     return { id: item.id, ok: true, faces, skipped, width: bitmap.width, height: bitmap.height };

@@ -7,6 +7,8 @@
  * reloads.
  */
 
+import { toVector } from '../analysis/cluster.js';
+
 const DB_NAME = 'gp-cleaner';
 const DB_VERSION = 2;
 const STORE_ITEMS = 'items';
@@ -222,7 +224,9 @@ export async function saveFaces(results, analysed) {
           photoId: r.id,
           box: face.box,
           score: face.score,
-          vector: face.vector
+          // IndexedDB structure-clones, so the typed array survives here. It is
+          // rebuilt on the way in because the value arrived over messaging.
+          vector: toVector(face.vector)
         });
       });
       const get = items.get(r.id);
@@ -238,7 +242,11 @@ export async function saveFaces(results, analysed) {
 
 export async function getAllFaces() {
   const store = await tx(STORE_FACES, 'readonly');
-  return wrap(store.getAll());
+  const rows = await wrap(store.getAll());
+  // Rows written before vectors survived the trip are repaired on read: their
+  // numbers are intact, only the type was lost, so there is nothing to gain by
+  // making the user read every photo again.
+  return rows.map((r) => ({ ...r, vector: toVector(r.vector) }));
 }
 
 export async function countFaces() {

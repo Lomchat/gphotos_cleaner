@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 
 import {
   clusterFaces, assignToGroups, carryNames, groupLabel, peopleByPhoto,
-  normalise, distance, DEFAULT_EPS
+  normalise, distance, toVector, DEFAULT_EPS
 } from '../src/analysis/cluster.js';
 
 /* ------------------------------------------------------------- fixtures */
@@ -326,4 +326,56 @@ test('group ids per photo come back sorted', () => {
 
 test('the default threshold is the one the model was measured against', () => {
   assert.equal(DEFAULT_EPS, 0.55);
+});
+
+/* ------------------------------------------------ crossing a JSON boundary */
+
+/**
+ * Face vectors travel from the offscreen document to the panel over
+ * chrome.runtime messaging, which serialises to JSON rather than
+ * structure-cloning. A Float32Array arrives there as {"0": .., "1": ..} with no
+ * length at all — every distance then computes as 1, further apart than the
+ * grouping threshold, so every face becomes a singleton and is dropped. The
+ * symptom is zero people from a library full of them, and nothing logged.
+ */
+const asJson = (v) => JSON.parse(JSON.stringify(v));
+
+test('a vector that crossed JSON is rebuilt, not silently mangled', () => {
+  const real = new Float32Array([0.6, 0.8, 0]);
+  const rebuilt = toVector(asJson(real));
+  assert.equal(rebuilt.length, 3);
+  assert.ok(Math.abs(rebuilt[0] - 0.6) < 1e-6);
+});
+
+test('plain arrays and typed arrays are both accepted', () => {
+  assert.equal(toVector([1, 2, 3]).length, 3);
+  assert.equal(toVector(new Float32Array(4)).length, 4);
+});
+
+test('a vector that crossed JSON groups exactly like the original', () => {
+  const faces = people([5, 5], { seed: 31 });
+  const direct = clusterFaces(faces).groups.map((g) => g.size).sort();
+  const viaMessage = clusterFaces(
+    faces.map((f) => ({ ...f, vector: asJson(f.vector) }))
+  ).groups.map((g) => g.size).sort();
+  assert.deepEqual(viaMessage, direct);
+});
+
+test('identical faces are zero apart however they were serialised', () => {
+  // The precise reading that made every face a stranger: distance(x, x) === 1.
+  const v = toVector(asJson(new Float32Array([0.6, 0.8, 0])));
+  assert.ok(distance(v, v) < 1e-6);
+});
+
+test('an unusable vector fails loudly instead of yielding no groups', () => {
+  // Zero groups from thousands of faces is indistinguishable from a library
+  // with nobody in it. It has to be an error, not a result.
+  assert.throws(() => toVector('nonsense'), /unusable face vector/);
+  assert.throws(() => toVector(null), /unusable face vector/);
+  assert.throws(() => distance(new Float32Array(0), new Float32Array(0)), /zero-length/);
+});
+
+test('grouping refuses vectors with no length rather than returning nothing', () => {
+  const faces = [{ id: 'a', photoId: 'p', vector: {} }];
+  assert.throws(() => clusterFaces(faces), /unusable face vector|no length/);
 });
