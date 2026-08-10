@@ -13,6 +13,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { CRITERIA, Panel } from '../src/ui/panel.js';
+
+const DEFAULT_SETTINGS_SOURCE = readFileSync(
+  new URL('../src/ui/panel.js', import.meta.url), 'utf8'
+);
 import { PANEL_CSS } from '../src/ui/styles.js';
 import { DEFAULT_FILTERS, CRITERION_TESTS, CRITERION_LABELS } from '../src/common/filters.js';
 
@@ -243,10 +247,11 @@ test('the panel asks whether the model is already downloaded when it starts', ()
 
 /** The body of one method, from its declaration to the start of the next one. */
 function methodBody(source, name) {
-  const decl = '\n  ' + name + '(';
-  const start = source.indexOf(decl);
+  // `async` is part of the declaration, so matching the bare name would miss
+  // exactly the methods that do the interesting work.
+  const start = source.search(new RegExp(`\\n {2}(?:async )?${name}\\(`));
   assert.notEqual(start, -1, `${name} not found`);
-  const rest = source.slice(start + decl.length);
+  const rest = source.slice(start + 1);
   const end = rest.search(/\n {2}(?:\/\*\*|(?:async )?[a-zA-Z_$][\w$]*\()/);
   return end === -1 ? rest : rest.slice(0, end);
 }
@@ -277,13 +282,42 @@ test('the picker is rendered beside the criteria it parameterises', () => {
     'the sorting view must render the people picker');
 });
 
-test('the Analyse tab is where the model and the face pass are offered', () => {
+test('grouping is one switch, with no separate download step', () => {
+  // Asking twice for the same decision only strands people who ticked the box
+  // and then wondered why nothing happened.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   const block = methodBody(source, 'buildPeopleOption');
-  assert.match(block, /downloadRecognitionModel\(/,
-    'the download button belongs in the Analyse tab');
+  assert.equal(/Download the model/.test(block), false,
+    'the download button should be gone; the run fetches it');
+  assert.match(block, /scanPeople/, 'the switch belongs in the Analyse tab');
   assert.match(block, /runPeopleScan\(/,
     'so does the catch-up button for photos analysed before it was switched on');
+});
+
+test('the switch says what it will download, before anything runs', () => {
+  // The switch is the consent, so the disclosure has to sit on it rather than
+  // in a dialog after the fact.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const block = methodBody(source, 'buildPeopleOption');
+  assert.match(block, /13 MB/, 'the size must be stated');
+  assert.match(block, /non-commercial research use/, 'the licence must be stated');
+  assert.match(block, /Untick to skip/, 'declining must be offered');
+});
+
+test('grouping is on by default', () => {
+  assert.equal(DEFAULT_SETTINGS_SOURCE.includes('scanPeople: true'), true,
+    'the switch ships ticked');
+});
+
+test('the pass fetches the model itself, and gives up gracefully', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const scan = methodBody(source, 'runPeopleScan');
+  assert.match(scan, /ensureRecognitionModel\(/,
+    'the scan must fetch the model rather than refusing to start');
+
+  const ensure = methodBody(source, 'ensureRecognitionModel');
+  assert.match(ensure, /return false/,
+    'a failed download must be survivable: the visual analysis is worth keeping');
 });
 
 test('every method the panel calls on itself exists', () => {

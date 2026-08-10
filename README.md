@@ -125,11 +125,16 @@ flips into the selection.
 **3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
 Then the extension stops. Review, and delete with Google's own button if you want.
 
-**Grouping by person** *(optional).* Everything that *runs* lives in the Analyse
-tab: the one-time model download, the **Also group photos by person** switch,
-and a catch-up button for photos measured before you turned it on. With the
-switch on, each run additionally re-reads photos containing a face at a larger
-size, turns each face into an identity vector and groups them.
+**Grouping by person.** One switch in the Analyse tab, **Also group photos by
+person**, ticked by default. With it on, each run additionally re-reads photos
+containing a face at a larger size, turns each face into an identity vector and
+groups them — and the first such run fetches the 13 MB recognition model, once.
+
+The switch *is* the consent, so it says so before anything runs: the size, the
+licence, and that unticking skips the download entirely. It is the only thing
+this extension ever fetches that is not one of your photos. If the download
+fails the run carries on without grouping — the visual analysis behind it took
+minutes and is worth keeping.
 
 The people themselves appear in the sorting view, directly under the **With /
 Without selected people** criteria they parameterise — tick who you mean, name
@@ -137,8 +142,7 @@ them if you like, and the name follows that person across rebuilds. There is no
 separate tab: picking who you mean belongs next to the box you just ticked, and
 a second pass you have to remember to launch is a second pass that never runs.
 
-It needs a 13 MB model, downloaded once on an explicit click. Nothing else in
-the extension depends on it.
+Nothing else in the extension depends on it.
 
 ---
 
@@ -384,7 +388,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 378 tests, no external dependencies
+npm test        # 388 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

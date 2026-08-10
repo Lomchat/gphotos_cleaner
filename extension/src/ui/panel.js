@@ -1358,61 +1358,53 @@ export class Panel {
   }
 
   /**
-   * Whether the run also reads faces, and the one-time download that enables it.
+   * Whether the run also reads faces.
    *
-   * It lives here because this is where the work
-   * is started: a second pass the user has to remember to launch is a second
-   * pass that never runs. The download stays an explicit choice — the weights
-   * are licensed for non-commercial research use and cannot be bundled with an
-   * MIT extension, and it is the only thing this extension ever fetches that is
-   * not one of your photos.
+   * One switch, always usable. Recognising people needs a 13 MB model that
+   * cannot be bundled — its weights are licensed for non-commercial research
+   * use and this extension is MIT — so the first run that needs it fetches it.
+   *
+   * The switch is therefore the consent, which is why the label says what it
+   * will do rather than leaving it to a dialog nobody reads. It is the only
+   * thing this extension ever fetches that is not one of your photos, and
+   * turning it off means nothing is fetched at all.
    */
   buildPeopleOption() {
     const s = this.state.settings;
     const p = this.state.people;
     const busy = !!this.state.busy;
+
     const bar = p.progress
       ? el('div', {},
           el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
           el('div', { class: 'muted tiny', text: p.progress.label }))
       : null;
 
-    if (!p.modelReady) {
-      return el('div', { class: 'card', style: 'margin-top:10px' },
-        el('label', { class: 'switch' },
-          el('input', { type: 'checkbox', checked: false, disabled: true }),
-          el('span', {}, 'Also group photos by person')),
-        el('div', { class: 'muted', style: 'margin-top:6px' },
-          'Needs a ', el('b', {}, '13 MB'),
-          ' recognition model — downloaded once, then kept in your browser. Not bundled: its weights are licensed for non-commercial research use and this extension is MIT.'),
-        bar,
-        p.error ? el('div', { class: 'banner danger' }, p.error) : null,
-        el('button', {
-          class: 'action', style: 'margin-top:8px',
-          disabled: busy,
-          text: busy && p.downloading ? 'Downloading…' : 'Download the model',
-          onclick: () => this.downloadRecognitionModel()
-        }));
-    }
-
-    // Photos analysed before the switch was turned on, or before the model
-    // existed, would otherwise wait for a run that never comes: the main
-    // analysis skips what it has already measured, so it would never revisit
-    // them. This catches them up without re-analysing anything else.
+    // Photos analysed before the switch was turned on would otherwise wait for
+    // a run that never comes: the main analysis skips what it has already
+    // measured, so it would never revisit them.
     const todo = pendingPeople(this.state.items);
     const candidates = peopleCandidates(this.state.items);
 
-    return el('div', { style: 'margin-top:10px' },
+    return el('div', { class: 'card', style: 'margin-top:10px' },
       el('label', { class: 'switch' },
         el('input', {
           type: 'checkbox', checked: s.scanPeople, disabled: busy,
           onchange: (e) => { s.scanPeople = e.target.checked; this.persist(); this.renderAll(); }
         }),
         el('span', {}, 'Also group photos by person'),
-        el('small', {}, 'reads photos containing a face a second time, at ' + PEOPLE_RENDER_PX + 'px')),
+        el('small', {}, `re-reads photos containing a face at ${PEOPLE_RENDER_PX}px`)),
+
+      s.scanPeople && !p.modelReady
+        ? el('div', { class: 'muted', style: 'margin-top:6px' },
+            'The first run will fetch a ', el('b', {}, '13 MB'),
+            ' recognition model, once. It is not bundled because its weights are licensed for non-commercial research use and this extension is MIT — and it is the only thing ever downloaded here that is not one of your photos. Untick to skip it entirely.')
+        : null,
+
       bar,
       p.error ? el('div', { class: 'banner danger' }, p.error) : null,
-      todo.length
+
+      s.scanPeople && todo.length
         ? el('button', {
             class: 'action', style: 'margin-top:8px',
             disabled: busy,
@@ -1420,7 +1412,10 @@ export class Panel {
             title: 'Catch up photos measured before this was switched on',
             onclick: () => this.runPeopleScan()
           })
-        : el('div', {},
+        : null,
+
+      s.scanPeople && !todo.length && p.modelReady
+        ? el('div', {},
             el('div', { class: 'muted tiny', style: 'margin-top:6px' },
               p.faceCount
                 ? `${nf(p.faceCount)} face(s) known · ${nf(p.groups.length)} person(s). Pick them in the sorting view.`
@@ -1436,7 +1431,8 @@ export class Panel {
               text: `Read all ${nf(candidates.length)} again`,
               title: 'Forget every stored face and read the candidates from scratch',
               onclick: () => this.rereadAllFaces()
-            })));
+            }))
+        : null);
   }
 
   /**
@@ -1885,6 +1881,16 @@ export class Panel {
     return chrome.runtime.sendMessage(message);
   }
 
+  /**
+   * Persistence goes through the panel, as messaging already does.
+   *
+   * Both are the edges of this class, and routing them through named methods is
+   * what lets the run be exercised without a browser attached.
+   */
+  saveFaces(results, analysed) {
+    return db.saveFaces(results, analysed);
+  }
+
   async refreshPeopleState() {
     const p = this.state.people;
     try {
@@ -1918,25 +1924,36 @@ export class Panel {
     if (!bar) this.renderAll();
   }
 
-  async downloadRecognitionModel() {
+  /**
+   * Make sure the recognition model is present, fetching it once if not.
+   *
+   * @returns {Promise<boolean>} false when it could not be had, so the caller
+   *   skips the pass rather than failing the whole run: the visual analysis is
+   *   worth keeping even when grouping is unavailable.
+   */
+  async ensureRecognitionModel(log = null) {
     const p = this.state.people;
-    this.state.busy = 'people';
+    if (p.modelReady) return true;
+
     p.error = null;
     p.downloading = true;
-    p.progress = { ratio: 0, label: 'Starting…' };
+    p.progress = { ratio: 0, label: 'Fetching the recognition model…' };
+    if (log) this.log(log, 'Fetching the recognition model (13 MB, once)…');
     this.renderAll();
 
     try {
       const res = await this.send({ type: 'PEOPLE_DOWNLOAD' });
       if (!res?.ok) throw new Error(res?.error || 'download failed');
       p.modelReady = true;
-      this.flashStatus('Recognition model ready');
+      if (log) this.log(log, 'Recognition model ready.', 'ok');
+      return true;
     } catch (err) {
-      p.error = `${err.message}. Check your connection and try again.`;
+      p.error = `Could not fetch the recognition model: ${err.message}. Grouping is skipped; everything else is unaffected.`;
+      if (log) this.log(log, p.error, 'err');
+      return false;
     } finally {
-      this.state.busy = null;
+      p.downloading = false;
       p.progress = null;
-      this.renderAll();
     }
   }
 
@@ -1953,12 +1970,21 @@ export class Panel {
       return 0;
     }
     const p = this.state.people;
-    if (!p.modelReady) return 0;
-
     const todo = pendingPeople(this.state.items);
     if (!todo.length) return 0;
 
     if (!inline) this.state.busy = 'people';
+
+    // Fetched here rather than behind a button: the switch above is the
+    // consent, and asking twice for the same decision only strands people who
+    // ticked it and then wondered why nothing happened. Ordered before the
+    // scan because every photo needs it.
+    if (!p.modelReady && !(await this.ensureRecognitionModel(log))) {
+      if (!inline) this.state.busy = null;
+      this.renderAll();
+      return 0;
+    }
+
     p.error = null;
     p.progress = { ratio: 0, label: `0 / ${nf(todo.length)}` };
     if (log) this.log(log, `Reading faces in ${nf(todo.length)} photo(s)…`);
@@ -1966,6 +1992,7 @@ export class Panel {
 
     const totals = await scanFaces(todo, {
       send: (m) => this.send(m),
+      save: (results, ids) => this.saveFaces(results, ids),
       onProgress: ({ done, total, faces }) => {
         p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)} · ${nf(faces)} face(s)` };
         if (log) {
