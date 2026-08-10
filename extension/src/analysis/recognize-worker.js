@@ -36,7 +36,10 @@ self.onmessage = async (ev) => {
 
       session = await ort.InferenceSession.create(new Uint8Array(bytes), {
         executionProviders: ['wasm'],
-        graphOptimizationLevel: 'all'
+        graphOptimizationLevel: 'all',
+        // The env log level does not reach the native graph builder, which
+        // narrates every optimisation it declines. Errors only.
+        logSeverityLevel: 3
       });
       inputName = session.inputNames[0];
       self.ortTensor = ort.Tensor;

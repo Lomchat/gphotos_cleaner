@@ -371,7 +371,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 365 tests, no external dependencies
+npm test        # 368 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
@@ -399,6 +399,20 @@ and runtime actually work under the extension's CSP.
 
 The recognition model is deliberately **not** here — see the design note above.
 It is fetched on demand and kept in the browser.
+
+The detector has had its weights removed from its graph inputs. The exporter of
+its era listed all 245 of them there, which blocks constant folding. Measured in
+Chrome, on the same input:
+
+| | as exported | cleaned |
+|---|---|---|
+| Session creation | 1207 ms | **100 ms** |
+| One inference | 81.7 ms | **53.6 ms** |
+
+Detections are identical — scores differ by 2.4e-7, against a 0.75 threshold.
+Session creation is paid once per worker, five of them, so that first column was
+about five seconds of every startup. `tests/vendor.test.js` pins the file's hash
+so a hand re-vendoring cannot quietly undo it.
 
 Committed rather than fetched: the extension must install with "Load unpacked"
 and no build step, and a model downloaded at runtime would break the promise that
