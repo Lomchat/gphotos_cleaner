@@ -15,6 +15,7 @@ import {
 } from '../content/scanner.js';
 import { Analyzer } from '../content/analyze-client.js';
 import { Selector } from '../content/actions.js';
+import { withZoom, ZOOM_STEPS, DEFAULT_FACTOR } from '../content/zoom.js';
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
@@ -49,7 +50,9 @@ const DEFAULT_SETTINGS = {
   maxPerRun: 0,
   analyzeInflight: 3,
   scanOlderThanTs: null,  // only handle items older than this date
-  scanPeople: true       // read faces as part of the main run
+  scanPeople: true,      // read faces as part of the main run
+  scanZoom: 1,           // page zoom while listing; 1 = leave it alone
+  lastTilesPerStep: 0    // measured, so the setting can be judged not guessed
 };
 
 /**
@@ -845,6 +848,7 @@ export class Panel {
 
           this.buildSinceControl(),
           this.buildLimitControl(),
+          this.buildZoomControl(),
           this.buildPeopleOption(),
           this.buildPlanNote(pending),
           this.buildResumeNote(),
@@ -1269,6 +1273,47 @@ export class Panel {
           : el('div', { class: 'muted tiny', style: 'margin-top:8px' },
               'No criterion is on yet, so nothing is selected.'))
     );
+  }
+
+  /**
+   * Page zoom while listing.
+   *
+   * Google Photos renders exactly what fits the viewport and nothing beyond it,
+   * so a smaller zoom means more tiles per screen and proportionally fewer
+   * stops — and a stop costs a fixed settle wait, which is what makes listing
+   * slow. The panel counter-scales, so it stays the size it is now.
+   *
+   * Off by default: it changes what the user's own tab looks like for the
+   * duration, and that should be asked for rather than assumed.
+   */
+  buildZoomControl() {
+    const s = this.state.settings;
+    const busy = !!this.state.busy;
+    const row = el('div', { class: 'sorts', style: 'margin-top:6px' });
+
+    for (const step of ZOOM_STEPS) {
+      row.append(el('button', {
+        class: `sort${s.scanZoom === step.factor ? ' on' : ''}`,
+        text: step.label,
+        disabled: busy,
+        title: step.factor === 1
+          ? 'Leave the page at its normal size'
+          : `Roughly ${Math.round(1 / (step.factor * step.factor))}x more tiles per screen`,
+        onclick: () => { s.scanZoom = step.factor; this.persist(); this.renderAll(); }
+      }));
+    }
+
+    const measured = this.state.settings.lastTilesPerStep;
+    return el('div', { style: 'margin-top:12px' },
+      el('div', { class: 'muted' }, 'Zoom the page out while listing:'),
+      row,
+      el('div', { class: 'muted tiny' },
+        s.scanZoom < 1
+          ? 'The page shrinks so more thumbnails fit at once; this panel keeps its size. Put back when the run ends.'
+          : 'Listing stops once per screenful, and each stop waits for the grid to settle.'),
+      measured
+        ? el('div', { class: 'muted tiny', text: `Last run listed ${nf(Math.round(measured))} item(s) per stop.` })
+        : null);
   }
 
   /**
@@ -2208,6 +2253,18 @@ export class Panel {
    */
   async startFullRun() {
     if (this.state.busy) return;
+    const factor = this.state.settings.scanZoom;
+    const { applied } = await withZoom(factor, {
+      host: this.host,
+      work: () => this.doFullRun()
+    });
+    if (factor > 0 && factor < 1 && applied == null) {
+      this.flashStatus('The browser refused to zoom; ran at normal size', 'error', 6000);
+    }
+  }
+
+  async doFullRun() {
+    if (this.state.busy) return;
     this.state.busy = 'full';
     this.aborting = false;
     this.setStatus({ label: 'Starting engine…', ratio: null, tone: null });
@@ -2320,7 +2377,13 @@ export class Panel {
         if (scanResult.repaired) {
           this.log(scanLog, `${nf(scanResult.repaired)} item(s) recovered their thumbnail and can now be analysed.`, 'ok');
         }
-        if (scanResult.noUrl) {
+        if (scanResult.perRound) {
+        this.state.settings.lastTilesPerStep = scanResult.perRound;
+        this.persist();
+        this.log(scanLog,
+          `${nf(Math.round(scanResult.perRound))} item(s) per stop over ${nf(scanResult.rounds)} stop(s).`);
+      }
+      if (scanResult.noUrl) {
           this.log(scanLog, `${nf(scanResult.noUrl)} item(s) seen before their thumbnail arrived — run again to recover them.`, 'err');
         }
       }

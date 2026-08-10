@@ -58,6 +58,23 @@ Two controls bound the work, and a banner states what the next run will do:
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
   date. The useful direction for cleaning: purge the old, never touch the recent.
 - **Limit per run** — none, 500, 2,000, 10,000 or a custom number.
+- **Zoom the page out while listing** — off by default. Google Photos renders
+  exactly the tiles that fit the viewport and nothing beyond it (measured on a
+  real library: zero tiles below the fold), so a smaller zoom puts more tiles on
+  one screen and the scanner makes proportionally fewer stops — and a stop costs
+  a fixed settle wait, which is what makes listing slow. The panel counter-scales
+  so it keeps its size, and the zoom is restored when the run ends, fails, or the
+  page goes away.
+
+  Two things worth knowing before turning it on. It only speeds up **listing**:
+  the analysis fetches thumbnails by URL in the background, and does not care
+  what is on screen. And the gain is not asserted anywhere — each run reports how
+  many items it listed per stop, so the setting can be judged on your own library
+  rather than on a claim.
+
+  CSS zoom was tried first and does not work: it enlarges the scroll container
+  (measured 775px → 3340px) but leaves `window.innerHeight` alone, and Google
+  Photos sizes its virtual window from the window. The tile count did not move.
 
 **2 · Sort.** The tab itself is a door: a summary and one button. The work
 happens in the wide view — criteria on the left, order buttons above, thumbnails
@@ -338,7 +355,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 331 tests, no external dependencies
+npm test        # 348 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

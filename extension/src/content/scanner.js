@@ -266,6 +266,11 @@ export class Scanner {
       dateCarried: this.stats.dateCarried,
       thumbRatio: this.stats.thumbRatio,
       skippedRecent: this.stats.skippedRecent,
+      // Items harvested per stop. This is the number the zoom setting is
+      // supposed to move, so it is reported rather than inferred: a display
+      // preference that claims a speed-up should have to show it.
+      rounds: this.stats.rounds,
+      perRound: this.stats.rounds ? this.fresh.size / this.stats.rounds : 0,
       stillSeeking: this.window.seeking,
       reachedBottom,
       limitReached,
