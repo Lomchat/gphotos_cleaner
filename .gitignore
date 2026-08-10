@@ -3,18 +3,3 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.zip
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-.pytest_cache/
-
-# Local backend state: the SQLite database and the auth token.
-backend/data/
-
-# The ArcFace model is 166 MB and downloaded on first run
-# (python -m backend.download_models). The detector IS committed, under
-# extension/vendor/models/ — it is 1.2 MB and both sides must use the same one.
-backend/models/*.onnx
-backend/models/*.part

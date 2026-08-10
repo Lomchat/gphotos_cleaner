@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isGoogleImageUrl, withThumbSize } from '../src/content/dom-adapter.js';
-import { DEFAULT_BACKEND } from '../src/common/backend.js';
+import { PEOPLE_RENDER_PX } from '../src/analysis/people-runner.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -129,14 +129,13 @@ test('every recognised host is covered by a manifest permission', () => {
   }
 });
 
-test('the backend rendition size produces a valid Google URL', () => {
-  // The People tab rewrites each catalogue URL to a larger size before sending
-  // it. A malformed rewrite means the backend fetches nothing and the whole
-  // feature silently finds no faces.
+test('the People pass rendition produces a valid Google URL', () => {
+  // The People pass re-reads each photo at a larger size. A malformed rewrite
+  // means it fetches nothing and the whole feature silently finds no faces.
   const catalogued = withThumbSize('https://lh3.googleusercontent.com/abc=w176-h176-no', 176);
-  const forBackend = withThumbSize(catalogued, DEFAULT_BACKEND.thumbSize);
-  assert.match(forBackend, /=w512-h512/);
-  assert.equal(isGoogleImageUrl(forBackend), true);
+  const forPeople = withThumbSize(catalogued, PEOPLE_RENDER_PX);
+  assert.match(forPeople, new RegExp(`=w${PEOPLE_RENDER_PX}-h${PEOPLE_RENDER_PX}`));
+  assert.equal(isGoogleImageUrl(forPeople), true);
 });
 
 test('resizing twice does not stack size suffixes', () => {

@@ -126,26 +126,44 @@ test('every class used by the panel is defined', () => {
 
 /* ------------------------------------------------------------ people tab */
 
-test('the people criteria are flagged as needing the backend', () => {
+test('the people criteria are flagged as needing the People pass', () => {
   // The panel greys nothing out on its own: without this flag the hint would
   // be the only thing telling a user why ticking the box does nothing.
   for (const key of ['withPerson', 'withoutPerson']) {
     const crit = CRITERIA.find((c) => c.key === key);
     assert.ok(crit, `${key} is missing from the UI`);
-    assert.equal(crit.needsBackend, true, `${key} should be flagged needsBackend`);
+    assert.equal(crit.needsPeople, true, `${key} should be flagged needsPeople`);
   }
 });
 
-test('criteria that need no backend are not flagged', () => {
-  const local = CRITERIA.filter((c) => !c.needsBackend).map((c) => c.key);
+test('criteria that work on the thumbnail alone are not flagged', () => {
+  const local = CRITERIA.filter((c) => !c.needsPeople).map((c) => c.key);
   assert.ok(local.includes('noFace'));
   assert.ok(local.includes('duplicates'));
 });
 
-test('every criterion needing the backend says so in its hint', () => {
-  for (const crit of CRITERIA.filter((c) => c.needsBackend)) {
-    assert.match(crit.hint, /backend/i, `${crit.key} does not mention the backend`);
+test('every criterion needing the People pass says so in its hint', () => {
+  for (const crit of CRITERIA.filter((c) => c.needsPeople)) {
+    assert.match(crit.hint, /people/i, `${crit.key} does not point at the People tab`);
   }
+});
+
+test('each reason the people criteria are blocked is distinct and actionable', () => {
+  // Three different fixes — fetch the model, read the photos, pick somebody.
+  // One vague "unavailable" would leave the user guessing at all three.
+  const reason = (people, personIds) => Panel.prototype.peopleBlockReason.call({
+    state: { people, filters: { personIds } }
+  });
+  const noModel = reason({ modelReady: false, groups: [] }, []);
+  const noGroups = reason({ modelReady: true, groups: [] }, []);
+  const noPick = reason({ modelReady: true, groups: [{ id: 0 }] }, []);
+  const ready = reason({ modelReady: true, groups: [{ id: 0 }] }, [0]);
+
+  assert.match(noModel, /model/i);
+  assert.match(noGroups, /read/i);
+  assert.match(noPick, /tick/i);
+  assert.equal(ready, null);
+  assert.equal(new Set([noModel, noGroups, noPick]).size, 3);
 });
 
 test('a blocked people criterion is never left active in the filters', () => {
@@ -157,8 +175,8 @@ test('a blocked people criterion is never left active in the filters', () => {
     personIds: [0]
   };
   const fake = {
-    state: { filters, settings: { backend: { enabled: false } }, people: { health: null } },
-    backendBlockReason: Panel.prototype.backendBlockReason,
+    state: { filters, people: { modelReady: false, groups: [] } },
+    peopleBlockReason: Panel.prototype.peopleBlockReason,
     syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
   };
   fake.syncBlockedCriteria();
@@ -173,12 +191,8 @@ test('a usable people criterion is left alone', () => {
     personIds: [0]
   };
   const fake = {
-    state: {
-      filters,
-      settings: { backend: { enabled: true } },
-      people: { health: { authOk: true } }
-    },
-    backendBlockReason: Panel.prototype.backendBlockReason,
+    state: { filters, people: { modelReady: true, groups: [{ id: 0 }] } },
+    peopleBlockReason: Panel.prototype.peopleBlockReason,
     syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
   };
   fake.syncBlockedCriteria();
@@ -192,8 +206,8 @@ test('criteria that need no backend are untouched by the sync', () => {
     personIds: []
   };
   const fake = {
-    state: { filters, settings: { backend: { enabled: false } }, people: { health: null } },
-    backendBlockReason: Panel.prototype.backendBlockReason,
+    state: { filters, people: { modelReady: false, groups: [] } },
+    peopleBlockReason: Panel.prototype.peopleBlockReason,
     syncBlockedCriteria: Panel.prototype.syncBlockedCriteria
   };
   fake.syncBlockedCriteria();

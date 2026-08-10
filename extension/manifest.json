@@ -2,9 +2,12 @@
   "manifest_version": 3,
   "name": "Google Photos Cleaner",
   "version": "0.1.0",
-  "description": "Analyse your Google Photos library locally — people, screenshots, blur, duplicates — and tick what to clean up.",
+  "description": "Analyse your Google Photos library locally \u2014 people, screenshots, blur, duplicates \u2014 and tick what to clean up.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "offscreen"],
+  "permissions": [
+    "storage",
+    "offscreen"
+  ],
   "host_permissions": [
     "https://photos.google.com/*",
     "https://*.googleusercontent.com/*",
@@ -26,8 +29,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://photos.google.com/*"],
-      "js": ["src/content/content.js"],
+      "matches": [
+        "https://photos.google.com/*"
+      ],
+      "js": [
+        "src/content/content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -40,7 +47,9 @@
         "src/common/*.js",
         "src/analysis/*.js"
       ],
-      "matches": ["https://photos.google.com/*"]
+      "matches": [
+        "https://photos.google.com/*"
+      ]
     }
   ],
   "action": {

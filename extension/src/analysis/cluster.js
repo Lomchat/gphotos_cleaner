@@ -1,0 +1,244 @@
+/**
+ * Grouping face embeddings into people.
+ *
+ * Pure functions over Float32Array — no DOM, no model, no storage. This is the
+ * part where a mistake is invisible: two people merged into one group looks
+ * exactly like a working feature until you open it, and the group sits next to
+ * a button that hands a selection to Google Photos.
+ *
+ * Why not DBSCAN, which is the usual answer here: it needs the pairwise
+ * distance matrix, and 10,000 faces is 100 million pairs — 400 MB to hold and
+ * 51 GFLOP to fill, in a content script, on the user's tab. Instead each face
+ * is compared against the *centroids* found so far, which is O(n·k) with k the
+ * number of people, followed by a merge pass over the centroids alone (k², and
+ * k is in the hundreds). Same shape of answer, a thousandth of the work.
+ *
+ * The cost of that choice is order-dependence: a face that arrives early can
+ * found a group that a later, better-matching one would have joined. The merge
+ * pass exists to repair exactly that, and `groupsMatch` in the tests holds this
+ * to the same standard as the reference implementation.
+ */
+
+/** Cosine distance at which two faces are considered the same person. */
+export const DEFAULT_EPS = 0.55;
+
+/**
+ * Merging is deliberately stricter than assigning.
+ *
+ * Two centroids are each already an average of several faces, so they sit
+ * closer to their true identity than any single face does. Merging at the same
+ * threshold used for raw faces would pull distinct people together — and a
+ * wrong merge is the failure that offers up someone else's photos.
+ */
+export const MERGE_RATIO = 0.8;
+
+/** A person seen once cannot be told apart from a stranger; leave them out. */
+export const DEFAULT_MIN_SIZE = 2;
+
+/**
+ * Scale rows to unit length, in place where possible.
+ *
+ * ArcFace is trained with an angular margin: only direction carries identity.
+ * Skipping this makes cosine distance depend on vector length, and brightly lit
+ * faces drift away from dim ones for no reason at all.
+ */
+export function normalise(vector) {
+  let sum = 0;
+  for (let i = 0; i < vector.length; i++) sum += vector[i] * vector[i];
+  const norm = Math.sqrt(sum);
+  if (norm === 0) return vector;
+  const out = new Float32Array(vector.length);
+  for (let i = 0; i < vector.length; i++) out[i] = vector[i] / norm;
+  return out;
+}
+
+/** Cosine distance between two unit vectors, in [0, 2]. */
+export function distance(a, b) {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return 1 - Math.min(1, Math.max(-1, dot));
+}
+
+/**
+ * Group faces by identity.
+ *
+ * @param {Array<{id: string, photoId: string, vector: Float32Array}>} faces
+ * @param {{eps?: number, minSize?: number}} options
+ * @returns {{groups: Array, ungrouped: string[]}} groups carry `members`
+ *   (face ids), `photoIds`, `centroid` and `spread`.
+ */
+export function clusterFaces(faces, { eps = DEFAULT_EPS, minSize = DEFAULT_MIN_SIZE } = {}) {
+  if (!faces.length) return { groups: [], ungrouped: [] };
+
+  const dim = faces[0].vector.length;
+  const units = faces.map((f) => normalise(f.vector));
+
+  // ---- assign: one pass, each face against the centroids so far -----------
+  const clusters = [];
+  for (let i = 0; i < faces.length; i++) {
+    const unit = units[i];
+    let best = -1;
+    let bestDist = Infinity;
+    for (let c = 0; c < clusters.length; c++) {
+      const d = distance(unit, clusters[c].centroid);
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    if (best >= 0 && bestDist <= eps) {
+      addMember(clusters[best], i, unit);
+    } else {
+      clusters.push({ members: [i], sum: Float32Array.from(unit), centroid: unit });
+    }
+  }
+
+  // ---- merge: repair the order-dependence of the pass above ---------------
+  mergeClusters(clusters, eps * MERGE_RATIO, dim);
+
+  // ---- report -------------------------------------------------------------
+  const groups = [];
+  const ungrouped = [];
+  for (const cluster of clusters) {
+    if (cluster.members.length < minSize) {
+      for (const i of cluster.members) ungrouped.push(faces[i].id);
+      continue;
+    }
+    const members = cluster.members.map((i) => faces[i].id);
+    const photoIds = [...new Set(cluster.members.map((i) => faces[i].photoId))];
+    groups.push({
+      members,
+      photoIds,
+      size: cluster.members.length,
+      centroid: cluster.centroid,
+      spread: meanDistanceToCentroid(cluster, units)
+    });
+  }
+
+  // Largest first: the people someone actually wants to filter on.
+  groups.sort((a, b) => b.size - a.size);
+  groups.forEach((g, i) => { g.id = i; });
+  return { groups, ungrouped };
+}
+
+function addMember(cluster, index, unit) {
+  cluster.members.push(index);
+  for (let i = 0; i < unit.length; i++) cluster.sum[i] += unit[i];
+  cluster.centroid = normalise(cluster.sum);
+}
+
+/**
+ * Repeatedly fuse the closest pair of centroids until none are within reach.
+ *
+ * One pass is not enough: fusing A and B moves their centroid, which can bring
+ * it within range of C. Looping until nothing changes is what makes the result
+ * independent of the order faces arrived in.
+ */
+function mergeClusters(clusters, threshold, dim) {
+  let merged = true;
+  while (merged && clusters.length > 1) {
+    merged = false;
+    outer:
+    for (let a = 0; a < clusters.length; a++) {
+      for (let b = a + 1; b < clusters.length; b++) {
+        if (distance(clusters[a].centroid, clusters[b].centroid) > threshold) continue;
+        const sum = new Float32Array(dim);
+        for (let i = 0; i < dim; i++) sum[i] = clusters[a].sum[i] + clusters[b].sum[i];
+        clusters[a] = {
+          members: clusters[a].members.concat(clusters[b].members),
+          sum,
+          centroid: normalise(sum)
+        };
+        clusters.splice(b, 1);
+        merged = true;
+        break outer;
+      }
+    }
+  }
+}
+
+/**
+ * Mean distance from the members to their centroid.
+ *
+ * A high value on a large group is the signature of a merge — two people pulled
+ * together — and is the number to look at before trusting a group.
+ */
+function meanDistanceToCentroid(cluster, units) {
+  let total = 0;
+  for (const i of cluster.members) total += distance(units[i], cluster.centroid);
+  return Math.round((total / cluster.members.length) * 10000) / 10000;
+}
+
+/**
+ * Attach new faces to groups that already exist.
+ *
+ * Re-clustering the whole library after every run would renumber every group
+ * and undo any naming the user has done. New faces are matched against stored
+ * centroids instead, and anything too far away stays ungrouped rather than
+ * being forced into the closest match.
+ *
+ * @returns {Map<string, number>} face id → group id, only for faces that matched
+ */
+export function assignToGroups(faces, centroids, { eps = DEFAULT_EPS } = {}) {
+  const out = new Map();
+  if (!centroids.length) return out;
+  const units = centroids.map((c) => normalise(c.centroid));
+  for (const face of faces) {
+    const unit = normalise(face.vector);
+    let best = -1;
+    let bestDist = Infinity;
+    for (let i = 0; i < units.length; i++) {
+      const d = distance(unit, units[i]);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (best >= 0 && bestDist <= eps) out.set(face.id, centroids[best].id);
+  }
+  return out;
+}
+
+/**
+ * Carry names across a rebuild by matching centroids, not ids.
+ *
+ * Group ids are positional and change whenever the library does, so a name tied
+ * to an id would migrate to a different person — silently, and in a UI whose
+ * whole job is deciding what to delete.
+ */
+export function carryNames(groups, previous, { maxDistance = 0.35 } = {}) {
+  const named = previous.filter((p) => p.name && p.centroid);
+  const taken = new Set();
+  for (const group of groups) {
+    let best = null;
+    let bestDist = Infinity;
+    for (const old of named) {
+      if (taken.has(old)) continue;
+      const d = distance(normalise(group.centroid), normalise(old.centroid));
+      if (d < bestDist) { bestDist = d; best = old; }
+    }
+    if (best && bestDist <= maxDistance) {
+      group.name = best.name;
+      taken.add(best);
+    }
+  }
+  return groups;
+}
+
+/** A short label for a group, named or not. */
+export function groupLabel(group) {
+  return group.name || `Person ${group.id + 1}`;
+}
+
+/**
+ * Turn groups into "which people are in this photo".
+ *
+ * Photos absent from every group stay absent from the map: "not analysed" must
+ * remain distinguishable from "nobody in it", because the *without* filter
+ * depends on telling them apart.
+ */
+export function peopleByPhoto(groups) {
+  const byPhoto = new Map();
+  for (const group of groups) {
+    for (const photoId of group.photoIds) {
+      if (!byPhoto.has(photoId)) byPhoto.set(photoId, []);
+      byPhoto.get(photoId).push(group.id);
+    }
+  }
+  for (const list of byPhoto.values()) list.sort((a, b) => a - b);
+  return byPhoto;
+}

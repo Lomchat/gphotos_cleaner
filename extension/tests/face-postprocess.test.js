@@ -236,3 +236,25 @@ test('a full-frame detection round-trips through letterbox and back', () => {
   assert.ok(Math.abs(f.box[0]) < 1e-6 && Math.abs(f.box[1]) < 1e-6);
   assert.ok(Math.abs(f.box[2] - 1) < 1e-6 && Math.abs(f.box[3] - 1) < 1e-6);
 });
+
+/* --------------------------------------------------- the detector contract */
+
+test('the summary and the box list answer different questions', () => {
+  // The main analysis stores a summary; the People pass crops every box. They
+  // travel together, and confusing them means finding nobody at all.
+  const faces = [
+    { box: [0.1, 0.1, 0.2, 0.2], score: 0.9 },
+    { box: [0.6, 0.6, 0.8, 0.8], score: 0.99 }
+  ];
+  const summary = summarise(faces);
+  assert.equal(summary.faceCount, 2);
+  assert.equal(summary.faceScore, 0.99, 'the summary reports the strongest face');
+  assert.equal(summary.faces, undefined,
+    'summarise() has no "faces" key — reading one would always yield undefined');
+});
+
+test('an empty detection summarises without throwing', () => {
+  const summary = summarise([]);
+  assert.equal(summary.faceCount, 0);
+  assert.equal(summary.faceBox, null);
+});

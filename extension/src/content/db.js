@@ -8,9 +8,10 @@
  */
 
 const DB_NAME = 'gp-cleaner';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_ITEMS = 'items';
 const STORE_META = 'meta';
+const STORE_FACES = 'faces';
 
 let dbPromise = null;
 
@@ -27,6 +28,13 @@ function open() {
       }
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
+      }
+      // Faces live apart from items: one photo holds several, and an embedding
+      // is 2 KB of Float32Array that has no business being re-read every time
+      // the panel loads the catalogue.
+      if (!db.objectStoreNames.contains(STORE_FACES)) {
+        const faces = db.createObjectStore(STORE_FACES, { keyPath: 'id' });
+        faces.createIndex('photoId', 'photoId');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -113,9 +121,9 @@ export async function saveFeatures(results) {
  * Record which people groups each photo belongs to.
  *
  * `assignments` maps photo id → array of group ids. Every id passed in is
- * written, including those mapping to an empty array: "the backend looked and
- * found nobody" is a different answer from "the backend has not looked", and
- * the "without" filter depends on being able to tell them apart.
+ * written, including those mapping to an empty array: "looked and found
+ * nobody" is a different answer from "never looked", and the "without" filter
+ * depends on being able to tell them apart.
  */
 export async function savePeople(assignments) {
   const entries = [...assignments];
@@ -127,7 +135,7 @@ export async function savePeople(assignments) {
     for (const [id, groups] of entries) {
       const get = store.get(id);
       get.onsuccess = () => {
-        if (get.result) store.put({ ...get.result, people: groups });
+        if (get.result) store.put({ ...get.result, people: groups, peopleScanned: 1 });
       };
     }
     t.oncomplete = () => resolve();
@@ -147,6 +155,87 @@ export async function clearPeople() {
       if (!c) return;
       if (c.value.people !== undefined) {
         const { people, ...rest } = c.value;
+        c.update(rest);
+      }
+      c.continue();
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/* ------------------------------------------------------------------ faces */
+
+/**
+ * Replace every face known for these photos.
+ *
+ * Keyed by photo so re-running the pass cannot accumulate duplicates: the old
+ * rows for a photo go before its new ones arrive. `analysed` records photos the
+ * pass has looked at, including those with no face at all — "looked and found
+ * nobody" is a different answer from "never looked", and the *without* filter
+ * depends on telling them apart.
+ */
+export async function saveFaces(results, analysed) {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction([STORE_FACES, STORE_ITEMS], 'readwrite');
+    const faces = t.objectStore(STORE_FACES);
+    const items = t.objectStore(STORE_ITEMS);
+    const index = faces.index('photoId');
+
+    for (const photoId of analysed) {
+      const cursor = index.openKeyCursor(IDBKeyRange.only(photoId));
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (!c) return;
+        faces.delete(c.primaryKey);
+        c.continue();
+      };
+    }
+
+    for (const r of results) {
+      (r.faces || []).forEach((face, i) => {
+        faces.put({
+          id: `${r.id}#${i}`,
+          photoId: r.id,
+          box: face.box,
+          score: face.score,
+          vector: face.vector
+        });
+      });
+      const get = items.get(r.id);
+      get.onsuccess = () => {
+        if (get.result) items.put({ ...get.result, peopleScanned: 1, people: [] });
+      };
+    }
+
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+export async function getAllFaces() {
+  const store = await tx(STORE_FACES, 'readonly');
+  return wrap(store.getAll());
+}
+
+export async function countFaces() {
+  const store = await tx(STORE_FACES, 'readonly');
+  return wrap(store.count());
+}
+
+export async function clearFaces() {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction([STORE_FACES, STORE_ITEMS], 'readwrite');
+    t.objectStore(STORE_FACES).clear();
+    const items = t.objectStore(STORE_ITEMS);
+    const cursor = items.openCursor();
+    cursor.onsuccess = () => {
+      const c = cursor.result;
+      if (!c) return;
+      if (c.value.people !== undefined || c.value.peopleScanned !== undefined) {
+        const { people, peopleScanned, ...rest } = c.value;
         c.update(rest);
       }
       c.continue();
@@ -264,9 +353,10 @@ export async function markIds(ids, patch) {
 export async function clearAll() {
   const db = await open();
   return new Promise((resolve, reject) => {
-    const t = db.transaction([STORE_ITEMS, STORE_META], 'readwrite');
+    const t = db.transaction([STORE_ITEMS, STORE_META, STORE_FACES], 'readwrite');
     t.objectStore(STORE_ITEMS).clear();
     t.objectStore(STORE_META).clear();
+    t.objectStore(STORE_FACES).clear();
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });

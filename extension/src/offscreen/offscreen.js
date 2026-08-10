@@ -8,6 +8,11 @@
  */
 
 import { detect, startPool, poolStatus } from '../analysis/face-pool.js';
+import { analysePhoto } from '../analysis/people-runner.js';
+import {
+  MODEL as RECOGNITION_MODEL, downloadModel, modelPresent, forgetModel,
+  startPool as startRecognitionPool, poolStatus as recognitionStatus
+} from '../analysis/recognize-pool.js';
 
 /*
  * Sized for the network, not the CPU: these workers spend most of their time
@@ -167,6 +172,40 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       )
     ).then((results) => sendResponse({ ok: true, results }));
     return true; // async reply
+  }
+
+  if (msg.type === 'PEOPLE_STATUS') {
+    modelPresent().then((present) => sendResponse({
+      ok: true, present, model: RECOGNITION_MODEL, pool: recognitionStatus()
+    }));
+    return true;
+  }
+
+  if (msg.type === 'PEOPLE_DOWNLOAD') {
+    // Progress goes out as its own message rather than on the reply: the reply
+    // resolves once, at the end, and a 13 MB download on a slow link is long
+    // enough that a silent button reads as a crash.
+    downloadModel(({ received, total }) => {
+      chrome.runtime.sendMessage({ type: 'PEOPLE_PROGRESS', received, total }).catch(() => {});
+    })
+      .then((r) => startRecognitionPool().then((n) => sendResponse({ ok: n > 0, ...r, workers: n })))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
+  }
+
+  if (msg.type === 'PEOPLE_FORGET') {
+    forgetModel().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'PEOPLE_BATCH') {
+    // Sequential per photo, parallel across photos: each photo already fans its
+    // faces out across the recognition pool, and stacking both would queue far
+    // more work than there are workers.
+    Promise.all(msg.items.map((item) => analysePhoto(item)))
+      .then((results) => sendResponse({ ok: true, results }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
   }
 
   if (msg.type === 'PING') {

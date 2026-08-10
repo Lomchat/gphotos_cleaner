@@ -60,7 +60,15 @@ self.onmessage = async (ev) => {
         }),
         msg.pad
       );
-      self.postMessage({ type: 'detect-result', rpcId: msg.rpcId, result: summarise(faces) });
+      // The summary is what the main analysis stores; the boxes are what the
+      // People pass crops. Both travel every time rather than behind a flag —
+      // a caller that silently received no boxes would report "no faces found"
+      // and look exactly like a library with nobody in it.
+      self.postMessage({
+        type: 'detect-result',
+        rpcId: msg.rpcId,
+        result: { ...summarise(faces), boxes: faces }
+      });
     } catch (err) {
       self.postMessage({ type: 'detect-result', rpcId: msg.rpcId, error: String(err?.message || err) });
     }

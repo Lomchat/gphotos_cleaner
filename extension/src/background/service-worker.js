@@ -64,6 +64,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // The people pass shares the offscreen document with the main analysis, so
+  // it goes through the same relay. Listed by name rather than forwarded
+  // wholesale: a content script must not be able to reach arbitrary handlers.
+  if (msg.type === 'PEOPLE_STATUS' || msg.type === 'PEOPLE_DOWNLOAD' ||
+      msg.type === 'PEOPLE_FORGET' || msg.type === 'PEOPLE_BATCH') {
+    (async () => {
+      try {
+        await ensureOffscreen();
+        const res = await chrome.runtime.sendMessage({
+          target: 'offscreen', type: msg.type, items: msg.items
+        });
+        sendResponse(res || { ok: false, error: 'No reply from the analysis engine' });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  // Download progress travels the other way, offscreen -> panel. Relayed to
+  // every Google Photos tab, since the offscreen document cannot address them.
+  if (msg.type === 'PEOPLE_PROGRESS') {
+    chrome.tabs.query({ url: 'https://photos.google.com/*' }).then((tabs) => {
+      for (const tab of tabs) chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
+    }).catch(() => {});
+    return false;
+  }
+
   if (msg.type === 'ENGINE_STATUS') {
     (async () => {
       try {

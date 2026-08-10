@@ -183,11 +183,11 @@ export const CRITERION_TESTS = {
     (f.from == null || (it.ts != null && it.ts >= f.from)) &&
     (f.to == null || (it.ts != null && it.ts <= f.to)),
 
-  // People criteria need the optional backend. `it.people` is an array only
-  // once the backend has looked at that photo; undefined means "not analysed",
-  // which is emphatically not the same as "nobody in it". Treating the two
-  // alike would offer up every photo the backend has not reached yet under a
-  // filter the user reads as "definitely without them".
+  // People criteria need the People pass. `it.people` is an array only once
+  // that pass has read the photo; undefined means "not analysed", which is
+  // emphatically not the same as "nobody in it". Treating the two alike would
+  // offer up every photo the pass has not reached yet under a filter the user
+  // reads as "definitely without them".
   withPerson: (it, f) =>
     Array.isArray(it.people) && f.personIds.length > 0 &&
     it.people.some((g) => f.personIds.includes(g)),
