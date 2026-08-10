@@ -10,7 +10,7 @@
  * while fetching is not, and each session carries its own WebAssembly heap.
  */
 
-const POOL_SIZE = Math.max(2, Math.min(6, Math.round((navigator.hardwareConcurrency || 4) / 4)));
+export const POOL_SIZE = Math.max(2, Math.min(6, Math.round((navigator.hardwareConcurrency || 4) / 4)));
 
 const idle = [];
 const queue = [];
@@ -53,11 +53,11 @@ function spawn() {
  * if WebAssembly is blocked or the model is missing, every call must fall back
  * to the heuristic immediately rather than pay a failed load ten thousand times.
  */
-export function startPool() {
+export function startPool(size = POOL_SIZE) {
   if (started) return started;
   started = (async () => {
     const workers = (await Promise.all(
-      Array.from({ length: POOL_SIZE }, () => spawn())
+      Array.from({ length: size }, () => spawn())
     )).filter(Boolean);
 
     if (!workers.length) {

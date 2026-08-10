@@ -127,12 +127,34 @@ function draw(bitmap, maxSide) {
   return ctx.getImageData(0, 0, w, h);
 }
 
+/**
+ * Per-phase timing, so "the analysis is slow" can be answered rather than
+ * guessed at. The four phases respond to completely different fixes — a bigger
+ * fetch pool, a smaller rendition, cheaper maths, more detection workers — and
+ * a single total says nothing about which.
+ */
+function stopwatch() {
+  let mark = performance.now();
+  const spent = { fetch: 0, decode: 0, features: 0, detect: 0 };
+  return {
+    spent,
+    lap(phase) {
+      const now = performance.now();
+      spent[phase] += now - mark;
+      mark = now;
+    }
+  };
+}
+
 async function analyse(item) {
+  const clock = stopwatch();
   const bitmap = await fetchBitmap(item);
+  clock.lap('fetch');
   const natW = bitmap.width;
   const natH = bitmap.height;
 
   const img = draw(bitmap, ANALYSIS_SIDE);
+  clock.lap('decode');
   const { width: w, height: h } = img;
   const gray = toGray(img);
 
@@ -160,9 +182,18 @@ async function analyse(item) {
   let faceMethod = null;
   let skinFrac = 0;
 
-  const detW = draw(bitmap, DETECT_SIDE);
+  clock.lap('features');
+
+  // `draw` never upscales, so when the thumbnail is smaller than both caps the
+  // two draws produce byte-identical pixels. At the default 176px that is every
+  // photo: a second canvas, a second drawImage and a second getImageData, for
+  // an image we already have.
+  const detW = Math.max(natW, natH) <= Math.min(ANALYSIS_SIDE, DETECT_SIDE)
+    ? img
+    : draw(bitmap, DETECT_SIDE);
   const prepared = toInputTensor(detW, NET_W, NET_H);
   const detected = await requestDetection(prepared.tensor, prepared.pad, 0.6);
+  clock.lap('detect');
   if (detected) {
     faceScore = detected.faceScore;
     faceCount = detected.faceCount;
@@ -272,7 +303,9 @@ async function analyse(item) {
     darkScore: round(darkScore, 3),
     brightScore: round(brightScore, 3),
     screenshotScore: round(screenshotScore, 3),
-    documentScore: round(documentScore, 3)
+    documentScore: round(documentScore, 3),
+    // Not persisted with the item: the caller strips it after aggregating.
+    _spent: clock.spent
   };
 }
 

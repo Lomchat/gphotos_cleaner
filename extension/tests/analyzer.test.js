@@ -9,6 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { Analyzer } from '../src/content/analyze-client.js';
 
@@ -216,4 +217,31 @@ test('two successive passes split the work without overlap', async () => {
   assert.equal(r2.done, 20);
   assert.equal(r3.done, 10, 'the last pass only finds the remainder');
   assert.equal(new Set(engine.seen).size, 50, 'no item analysed twice');
+});
+
+/* ------------------------------------------------------------ timing seam */
+
+test('the worker reports where each photo spent its time', () => {
+  // "The analysis is slow" cannot be answered without this, and guessing has
+  // been wrong twice: the phases respond to completely different fixes.
+  const source = readFileSync(new URL('../src/analysis/worker.js', import.meta.url), 'utf8');
+  for (const phase of ['fetch', 'decode', 'features', 'detect']) {
+    assert.ok(source.includes(`lap('${phase}')`), `${phase} is not timed`);
+  }
+  assert.match(source, /_spent: clock\.spent/, 'the timing must ride back with the features');
+});
+
+test('the detection image is not drawn twice when it would be identical', () => {
+  // draw() never upscales, so below both caps the two draws produce the same
+  // pixels — a second canvas and a second getImageData for nothing.
+  const source = readFileSync(new URL('../src/analysis/worker.js', import.meta.url), 'utf8');
+  assert.match(source, /Math\.max\(natW, natH\) <= Math\.min\(ANALYSIS_SIDE, DETECT_SIDE\)/);
+});
+
+test('the timing never reaches the catalogue', () => {
+  // It is diagnostics, not a measurement of the photo. Persisting it would put
+  // a stopwatch reading into every row.
+  const source = readFileSync(new URL('../src/offscreen/offscreen.js', import.meta.url), 'utf8');
+  assert.match(source, /delete features\._spent/,
+    'the offscreen document must strip the timing before saving');
 });

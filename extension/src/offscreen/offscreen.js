@@ -161,16 +161,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || msg.target !== 'offscreen') return false;
 
   if (msg.type === 'ANALYZE_BATCH') {
+    // The per-photo timing rides back on the features and is summed here, then
+    // stripped: it answers "where does the time go" and has no business being
+    // written into the catalogue.
+    const spent = { fetch: 0, decode: 0, features: 0, detect: 0, photos: 0 };
     Promise.all(
       msg.items.map((item) =>
-        submit(item).then((r) => ({
-          id: item.id,
-          ok: !!r.ok,
-          features: r.features,
-          error: r.error
-        }))
+        submit(item).then((r) => {
+          const features = r.features;
+          if (features?._spent) {
+            for (const phase of ['fetch', 'decode', 'features', 'detect']) {
+              spent[phase] += features._spent[phase] || 0;
+            }
+            spent.photos++;
+            delete features._spent;
+          }
+          return { id: item.id, ok: !!r.ok, features, error: r.error };
+        })
       )
-    ).then((results) => sendResponse({ ok: true, results }));
+    ).then((results) => sendResponse({ ok: true, results, spent }));
     return true; // async reply
   }
 

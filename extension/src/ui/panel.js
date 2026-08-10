@@ -54,6 +54,7 @@ const DEFAULT_SETTINGS = {
   scanZoom: 1,           // page zoom while listing; 1 = leave it alone
   lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
   lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
+  lastAnalysisSplit: null, // where the per-photo work actually goes
   peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
 
@@ -1300,6 +1301,34 @@ export class Panel {
             ? `Ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}". Everything matching is ticked.`
             : 'No criterion on: the whole library is shown, nothing ticked. Tick photos yourself, or switch a criterion on.'))
     );
+  }
+
+  /**
+   * Say where the analysis spent itself, and what that implies.
+   *
+   * Worker-seconds, not wall-clock: sixteen run at once, so these add to more
+   * than the run took. The ratio is the useful part, because each phase answers
+   * to a different fix — a wider fetch pool, a smaller rendition, cheaper
+   * maths, more detection workers — and a single total picks none of them.
+   */
+  describeAnalysis(spent) {
+    const total = spent.fetch + spent.decode + spent.features + spent.detect;
+    if (!total || !spent.photos) return 'No timing recorded.';
+
+    const share = (v) => `${Math.round((v / total) * 100)}%`;
+    const each = Math.round(total / spent.photos);
+    const worst = ['fetch', 'decode', 'features', 'detect']
+      .reduce((a, b) => (spent[a] >= spent[b] ? a : b));
+    const advice = {
+      fetch: 'Waiting on Google. More parallel fetches would help; a smaller thumbnail would help more.',
+      decode: 'Decoding and drawing. A smaller thumbnail is the only lever.',
+      features: 'The measurements themselves, on the main analysis workers.',
+      detect: 'Face detection. It has its own, smaller pool — widen it.'
+    }[worst];
+
+    return `${each} ms of work per photo: ${share(spent.fetch)} fetch, ` +
+      `${share(spent.decode)} decode, ${share(spent.features)} measuring, ` +
+      `${share(spent.detect)} faces. ${advice}`;
   }
 
   /**
@@ -2596,6 +2625,11 @@ export class Panel {
       }
 
       this.log(anaLog, `Analysis done: ${nf(anaStats.done)} succeeded, ${nf(anaStats.failed)} failed.`, 'ok');
+      if (anaStats.spent?.photos) {
+        this.state.settings.lastAnalysisSplit = { ...anaStats.spent };
+        this.persist();
+        this.log(anaLog, this.describeAnalysis(anaStats.spent));
+      }
 
       // Recover thumbnails that arrived late, then analyse what was just
       // recovered: finishing the job is the machine's part, not the user's.

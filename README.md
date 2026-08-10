@@ -375,6 +375,27 @@ banners, when a problem occurs, rather than in a panel nobody opens in time.
 | Missing dates | `parseDateFromText`, `HEADER_SELECTOR` |
 | "Checkbox not found" | `CHECKBOX_SELECTOR`, `findCheckbox` |
 
+### Where the analysis time goes
+
+Every run now reports its own split, because guessing here has been wrong twice
+and the four phases answer to completely different fixes. Measured in Chrome,
+warm, 16 analysis workers over local images — so the fetch column is a floor,
+not what a real network costs:
+
+| Phase | Per photo | Share |
+|---|---|---|
+| fetch | 14.6 ms | 31% |
+| decode | 0.7 ms | 1% |
+| measure | 2.0 ms | 4% |
+| detect faces | 29.3 ms | 63% |
+
+Detection dominates the CPU side. Widening its pool past five barely moves the
+total, though — measured 247 to 265 photos/s going from 5 workers to 12 — so the
+queue is not where the time sits either. On a real library the fetch column
+grows by an order of magnitude and becomes the answer.
+
+The panel prints this after every run, with the phase that dominated named.
+
 ### Waiting for images, not just for tiles
 
 Google Photos renders tiles first and their images second. Harvest in between
@@ -411,7 +432,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 401 tests, no external dependencies
+npm test        # 404 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

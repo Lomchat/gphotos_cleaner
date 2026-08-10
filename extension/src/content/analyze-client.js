@@ -42,7 +42,20 @@ export class Analyzer {
     };
     this.running = false;
     this.aborted = false;
-    this.stats = { done: 0, failed: 0, total: 0 };
+    this.stats = { done: 0, failed: 0, total: 0, spent: emptySpent() };
+  }
+
+  /**
+   * Accumulate where the time went.
+   *
+   * These are worker-seconds, not wall-clock: several run at once, so they add
+   * up to more than the run took. That is the point — the ratio between them is
+   * what says which phase to attack, and the total says how much room there is.
+   */
+  addSpent(spent) {
+    for (const phase of ['fetch', 'decode', 'features', 'detect', 'photos']) {
+      this.stats.spent[phase] += spent[phase] || 0;
+    }
   }
 
   abort() {
@@ -76,7 +89,7 @@ export class Analyzer {
     if (this.running) throw new Error('An analysis is already running');
     this.running = true;
     this.aborted = false;
-    this.stats = { done: 0, failed: 0, total: 0 };
+    this.stats = { done: 0, failed: 0, total: 0, spent: emptySpent() };
 
     let budget = this.opts.maxPerPass;
 
@@ -133,7 +146,9 @@ export class Analyzer {
           const index = next++;
           if (index >= batches.length) return;
           try {
-            const results = await this.deps.sendBatch(batches[index]);
+            const reply = await this.deps.sendBatch(batches[index]);
+            const results = reply.results || reply;
+            if (reply.spent) this.addSpent(reply.spent);
             await this.deps.saveFeatures(results);
             for (const r of results) {
               if (r.ok) this.stats.done++;
@@ -157,6 +172,10 @@ export class Analyzer {
   }
 }
 
+function emptySpent() {
+  return { fetch: 0, decode: 0, features: 0, detect: 0, photos: 0 };
+}
+
 /** One round-trip to the engine, retried if the service worker was recycled. */
 async function defaultSendBatch(items, sleep) {
   let res;
@@ -173,5 +192,5 @@ async function defaultSendBatch(items, sleep) {
     }
   }
   if (!res?.ok) throw new Error(res?.error || 'Invalid reply from the analysis engine');
-  return res.results;
+  return res;
 }
