@@ -28,8 +28,14 @@ export const MIN_FACTOR = 0.25;
  * The number is the page's scale, so *smaller* means more thumbnails per
  * screen: 25% fits roughly sixteen times the area of 100%. Anything above 100%
  * would fit fewer, which is the opposite of the point.
+ *
+ * The default is deliberately the gentlest step that still does something.
+ * Zooming out multiplies the images Google has to load before a stop can be
+ * harvested, and a default of 50% turned a bad thumbnail-coverage case into an
+ * almost total one before that was fixed. Twice the tiles per screen is worth
+ * having; the steeper steps are there to be chosen, not assumed.
  */
-export const DEFAULT_FACTOR = 0.5;
+export const DEFAULT_FACTOR = 0.75;
 
 // Chrome's own preset steps, so the browser applies exactly what was asked for
 // rather than snapping to a neighbour.

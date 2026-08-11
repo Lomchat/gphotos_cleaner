@@ -49,7 +49,9 @@ const DEFAULT_SETTINGS = {
   // One volume limit per run. A single visible action means a single limit:
   // two separate counters behind one button were impossible to reason about.
   // 0 means no limit.
-  maxPerRun: 0,
+  // A bounded run by default: it finishes, reports what it found, and can be
+  // repeated. An unbounded first run on a large library looks like a hang.
+  maxPerRun: 2000,
   analyzeInflight: 3,
   scanOlderThanTs: null,  // only handle items older than this date
   scanPeople: true,      // read faces as part of the main run

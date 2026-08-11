@@ -57,8 +57,8 @@ Two controls bound the work, and a banner states what the next run will do:
 
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
   date. The useful direction for cleaning: purge the old, never touch the recent.
-- **Limit per run** — none, 500, 2,000, 10,000 or a custom number.
-- **Page size while listing** — 50% by default. Google Photos renders
+- **Limit per run** — 2,000 by default; none, 500, 10,000 or a custom number.
+- **Page size while listing** — 75% by default. Google Photos renders
   exactly the tiles that fit the viewport and nothing beyond it (measured on a
   real library: zero tiles below the fold), so a smaller zoom puts more tiles on
   one screen and the scanner makes proportionally fewer stops — and a stop costs
