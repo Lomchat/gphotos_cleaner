@@ -15,7 +15,9 @@ import {
 } from '../content/scanner.js';
 import { Analyzer } from '../content/analyze-client.js';
 import { Selector } from '../content/actions.js';
-import { withZoom, ZOOM_STEPS, DEFAULT_FACTOR } from '../content/zoom.js';
+import {
+  withZoom, ZOOM_STEPS, MIN_FACTOR, DEFAULT_FACTOR as ZOOM_DEFAULT
+} from '../content/zoom.js';
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
@@ -51,7 +53,7 @@ const DEFAULT_SETTINGS = {
   analyzeInflight: 3,
   scanOlderThanTs: null,  // only handle items older than this date
   scanPeople: true,      // read faces as part of the main run
-  scanZoom: 1,           // page zoom while listing; 1 = leave it alone
+  scanZoom: ZOOM_DEFAULT, // page zoom while listing; 1 = leave it alone
   lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
   lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
   lastAnalysisSplit: null, // where the per-photo work actually goes
@@ -1377,7 +1379,8 @@ export class Panel {
         disabled: busy,
         title: step.factor === 1
           ? 'Leave the page at its normal size'
-          : `Roughly ${Math.round(1 / (step.factor * step.factor))}x more tiles per screen`,
+          : `Smaller page, about ${Math.round(1 / (step.factor * step.factor))}x the tiles per screen`
+            + (step.factor === MIN_FACTOR ? " — Chrome's smallest" : ''),
         onclick: () => { s.scanZoom = step.factor; this.persist(); this.renderAll(); }
       }));
     }
@@ -1396,7 +1399,7 @@ export class Panel {
     }
 
     return el('div', { style: 'margin-top:12px' },
-      el('div', { class: 'muted' }, 'Zoom the page out while listing:'),
+      el('div', { class: 'muted' }, 'Page size while listing (smaller fits more):'),
       row,
       el('div', { class: 'muted tiny' },
         s.scanZoom < 1

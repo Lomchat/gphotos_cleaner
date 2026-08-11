@@ -15,12 +15,27 @@
  * real browser zoom changes what the page believes its viewport to be.
  */
 
-/** Below this the grid becomes unreadable and Google Photos starts to struggle. */
+/**
+ * 25% is not a choice, it is Chrome's floor.
+ *
+ * The browser's zoom range is 25% to 500%, and `chrome.tabs.setZoom` clamps to
+ * it — asking for 10% silently gives 25%. So there is no "more zoomed out" to
+ * offer past this, whatever the grid could theoretically hold.
+ */
 export const MIN_FACTOR = 0.25;
-export const DEFAULT_FACTOR = 0.33;
 
+/**
+ * The number is the page's scale, so *smaller* means more thumbnails per
+ * screen: 25% fits roughly sixteen times the area of 100%. Anything above 100%
+ * would fit fewer, which is the opposite of the point.
+ */
+export const DEFAULT_FACTOR = 0.5;
+
+// Chrome's own preset steps, so the browser applies exactly what was asked for
+// rather than snapping to a neighbour.
 export const ZOOM_STEPS = [
   { factor: 1, label: 'Off' },
+  { factor: 0.75, label: '75%' },
   { factor: 0.5, label: '50%' },
   { factor: 0.33, label: '33%' },
   { factor: 0.25, label: '25%' }

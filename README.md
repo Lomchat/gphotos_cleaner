@@ -58,13 +58,20 @@ Two controls bound the work, and a banner states what the next run will do:
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
   date. The useful direction for cleaning: purge the old, never touch the recent.
 - **Limit per run** — none, 500, 2,000, 10,000 or a custom number.
-- **Zoom the page out while listing** — off by default. Google Photos renders
+- **Page size while listing** — 50% by default. Google Photos renders
   exactly the tiles that fit the viewport and nothing beyond it (measured on a
   real library: zero tiles below the fold), so a smaller zoom puts more tiles on
   one screen and the scanner makes proportionally fewer stops — and a stop costs
   a fixed settle wait, which is what makes listing slow. The panel counter-scales
   so it keeps its size, and the zoom is restored when the run ends, fails, or the
   page goes away.
+
+  The number is the page's scale, so smaller fits more: 25% holds about sixteen
+  times the area of 100%. That is Chrome's floor — its zoom range is 25% to
+  500% and `setZoom` clamps to it, so there is nothing further to offer. Every
+  step is one Chrome already has, because asking for a value in between makes it
+  snap to a neighbour and the panel would then counter-scale by a factor the
+  page is not using.
 
   It only speeds up **listing**: the analysis fetches thumbnails by URL in the
   background and does not care what is on screen. And the gain is not asserted —
@@ -432,7 +439,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 404 tests, no external dependencies
+npm test        # 409 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

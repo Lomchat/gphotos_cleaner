@@ -157,3 +157,40 @@ test('the factor the browser actually applied is the one compensated for', async
     work: async () => { assert.equal(h.style.zoom, '2'); }
   });
 });
+
+/* -------------------------------------------------- the shape of the scale */
+
+test('the steps run downwards: smaller page, more thumbnails', () => {
+  // The number is the page's scale, not a quantity of anything. A step above
+  // 100% would fit fewer thumbnails, which is the opposite of the point.
+  const factors = ZOOM_STEPS.map((s) => s.factor);
+  assert.deepEqual(factors, [...factors].sort((a, b) => b - a), 'steps must descend');
+  assert.equal(Math.max(...factors), 1, 'nothing above 100%: that fits fewer');
+});
+
+test('the smallest step is the browser floor, not a taste', () => {
+  // Chrome's zoom range is 25%–500% and setZoom clamps to it, so offering 10%
+  // would silently give 25% and lie about what it did.
+  assert.equal(Math.min(...ZOOM_STEPS.map((s) => s.factor)), MIN_FACTOR);
+  assert.equal(MIN_FACTOR, 0.25);
+});
+
+test('every step is one Chrome already has', () => {
+  // Asking for a value between Chrome's presets makes it snap to a neighbour,
+  // so the panel would be counter-scaling by a factor the page is not using.
+  const chromePresets = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1];
+  for (const { factor } of ZOOM_STEPS) {
+    assert.ok(chromePresets.includes(factor), `${factor} is not a Chrome zoom step`);
+  }
+});
+
+test('the default zooms out, and is one of the offered steps', () => {
+  assert.ok(DEFAULT_FACTOR < 1, 'the default should actually do something');
+  assert.ok(ZOOM_STEPS.some((s) => s.factor === DEFAULT_FACTOR));
+});
+
+test('an ask below the floor is clamped, never silently obeyed', async () => {
+  const send = sender();
+  await setZoom(0.05, send);
+  assert.equal(send.calls[0].factor, MIN_FACTOR);
+});
