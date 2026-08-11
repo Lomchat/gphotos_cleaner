@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
   lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
   lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
   lastAnalysisSplit: null, // where the per-photo work actually goes
+  lastThumbRatio: null,  // images ready when the grid was harvested
   peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
 
@@ -1059,6 +1060,14 @@ export class Panel {
         ? 'Items were listed, but no image URL could be extracted. Either scrolling outran image loading, or Google changed the host serving them.'
         : 'Seen before their image loaded.'
     );
+
+    // The coverage reached is the number that says whether waiting longer would
+    // have helped or whether the images were never coming.
+    const ratio = this.state.settings.lastThumbRatio;
+    if (ratio != null) {
+      box.append(el('div', { class: 'muted tiny' },
+        `Last run: ${Math.round(ratio * 100)}% of visible thumbnails were ready when harvesting.`));
+    }
 
     // Separate what will be retried automatically from what is permanently
     // lost: promising a recovery that will not happen is worse than silence.
@@ -2604,7 +2613,14 @@ export class Panel {
         if (scanResult.repaired) {
           this.log(scanLog, `${nf(scanResult.repaired)} item(s) recovered their thumbnail and can now be analysed.`, 'ok');
         }
-        if (scanResult.perRound) {
+        if (scanResult.thumbRatio != null) {
+        this.state.settings.lastThumbRatio = scanResult.thumbRatio;
+        this.persist();
+        this.log(scanLog,
+          `Images ready when harvesting: ${Math.round(scanResult.thumbRatio * 100)}%` +
+          (scanResult.thumbBudgetMs ? ` (waited up to ${dur(Math.round(scanResult.thumbBudgetMs / 1000))} per stop)` : ''));
+      }
+      if (scanResult.perRound) {
         this.state.settings.lastTilesPerStep = scanResult.perRound;
         this.state.settings.lastWaitSplit = {
           settle: scanResult.waitMs || 0,

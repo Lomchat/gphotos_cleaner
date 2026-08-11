@@ -192,11 +192,42 @@ const LOADED_THUMB_SELECTOR = 'a[href*="/photo/"] img[src]';
  * Scrolling between the two produces items recorded without an image, so the
  * scanner uses this to decide whether it may move on.
  */
-export function thumbCoverage() {
+/**
+ * How much of the visible grid has its images.
+ *
+ * Only tiles in or near the viewport are counted. Google loads images for what
+ * the user can see and leaves the rest of its rendered range blank, so counting
+ * every tile in the document made the target unreachable: coverage sat below
+ * the threshold no matter how long we waited, the budget expired at every stop,
+ * and the screenful was harvested blind. That got worse the more tiles were
+ * rendered, which is exactly what zooming the page out does.
+ *
+ * @param {number} margin how far beyond the viewport still counts, in screens
+ * @param {object} viewport seam for tests; defaults to the real scroller
+ */
+export function thumbCoverage({ margin = 0.25, viewport } = {}) {
   const tiles = document.querySelectorAll(TILE_SELECTOR);
   if (!tiles.length) return { total: 0, ready: 0, ratio: 1 };
+
+  // Defensive: without a scroller, or without geometry to read, fall back to
+  // counting every tile. A coverage figure that throws would stop the scan.
+  let view = viewport ?? null;
+  if (!view) {
+    try {
+      view = findScroller()?.getBoundingClientRect?.() ?? null;
+    } catch { /* no usable viewport; count everything */ }
+  }
+  const slack = view ? view.height * margin : 0;
+
+  let total = 0;
   let ready = 0;
   for (const a of tiles) {
+    if (view) {
+      const box = a.getBoundingClientRect?.();
+      if (!box || !box.height) continue;
+      if (box.bottom < view.top - slack || box.top > view.bottom + slack) continue;
+    }
+    total++;
     const img = a.querySelector('img');
     if (img && (img.currentSrc || img.getAttribute('src'))) {
       ready++;
@@ -204,7 +235,9 @@ export function thumbCoverage() {
     }
     if (a.querySelector('[data-latest-bg]')) ready++;
   }
-  return { total: tiles.length, ready, ratio: ready / tiles.length };
+
+  if (!total) return { total: 0, ready: 0, ratio: 1 };
+  return { total, ready, ratio: ready / total };
 }
 
 /**

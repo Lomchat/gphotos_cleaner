@@ -413,11 +413,23 @@ before moving on, up to five seconds, aiming at 90% coverage.
 That wait has an early exit for the tail: the last image or two that never come.
 It used to fire after three quiet polls — about a third of a second, which is
 shorter than Google takes to deliver the *first* image deep in a large library.
-On a real run it triggered before anything had arrived and produced 1,836 items
-with no image out of 2,000. Quiet time is now measured in milliseconds rather
-than polls, and giving up early requires at least half the images to be in
-already: "none have arrived yet" means the page has not started, which is the
-opposite of "no more are coming".
+Quiet time is now measured in milliseconds rather than polls, and giving up
+early requires at least half the images to be in already: "none have arrived
+yet" means the page has not started, which is the opposite of "no more are
+coming".
+
+Two further things made that wait pointless on a zoomed-out grid. Coverage was
+measured over **every tile in the document**, but Google only loads images for
+what the user can see and leaves the rest of its rendered range blank — so the
+90% target was unreachable, the budget expired at every stop, and the screenful
+was harvested with no images at all. It now counts only the tiles in or near the
+viewport. And the budget itself was a flat five seconds, generous for the forty
+tiles of an unzoomed screen and hopeless for the three hundred of a zoomed-out
+one; it now scales with how many images are actually missing.
+
+Each run reports the coverage it reached, because that is the number that says
+whether waiting longer would have helped or whether the images were never
+coming.
 
 ### The "listed but never analysed" trap
 
@@ -439,7 +451,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 409 tests, no external dependencies
+npm test        # 413 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

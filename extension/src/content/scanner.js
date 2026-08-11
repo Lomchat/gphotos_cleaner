@@ -32,7 +32,13 @@ const DEFAULTS = {
   maxNewItems: Infinity, // pass size, in previously unseen items
   waitForThumbs: true,   // wait for images before moving on
   thumbTarget: 0.9,      // coverage aimed for before scrolling again
-  thumbWaitMaxMs: 5000,  // maximum wait to get there
+  // Budget for one stop. It has to scale with how many images are actually
+  // missing: a fixed five seconds is generous for the forty tiles of an
+  // unzoomed screen and hopeless for the three hundred of a zoomed-out one,
+  // where it expires every time and the whole screenful is harvested blind.
+  thumbWaitBaseMs: 2500,
+  thumbWaitPerImageMs: 45,
+  thumbWaitMaxMs: 20000, // ceiling, whatever the arithmetic says
   thumbPollMs: 110,      // coverage polling (pricier than a plain count)
   thumbStallMs: 1200,    // quiet time meaning "no more images are coming"
   coverage: null,        // seam: how loaded the grid is, for tests
@@ -131,6 +137,7 @@ export class Scanner {
       repaired: 0,
       seeking: false,    // crossing the out-of-scope zone
       thumbRatio: 1,     // share of rendered tiles that have an image
+      thumbBudgetMs: 0,  // wait allowed for one stop, sized from what is missing
       thumbWaitMs: 0,    // time spent waiting for thumbnails
       waitMs: 0          // time actually spent waiting on renders
     };
@@ -268,6 +275,7 @@ export class Scanner {
       noDate: this.stats.noDate,
       dateCarried: this.stats.dateCarried,
       thumbRatio: this.stats.thumbRatio,
+      thumbBudgetMs: this.stats.thumbBudgetMs,
       skippedRecent: this.stats.skippedRecent,
       // Items harvested per stop. This is the number the zoom setting is
       // supposed to move, so it is reported rather than inferred: a display
@@ -379,7 +387,17 @@ export class Scanner {
     let best = -1;
     let lastGain = Date.now();
 
-    while (Date.now() - started < this.opts.thumbWaitMaxMs) {
+    // Sized from what is actually missing right now, not from a constant.
+    const first = (this.opts.coverage || dom.thumbCoverage)();
+    this.stats.thumbRatio = first.ratio;
+    const missing = Math.max(0, first.total - first.ready);
+    const budget = Math.min(
+      this.opts.thumbWaitMaxMs,
+      this.opts.thumbWaitBaseMs + missing * this.opts.thumbWaitPerImageMs
+    );
+    this.stats.thumbBudgetMs = budget;
+
+    while (Date.now() - started < budget) {
       const cov = (this.opts.coverage || dom.thumbCoverage)();
       this.stats.thumbRatio = cov.ratio;
       if (cov.total === 0 || cov.ratio >= this.opts.thumbTarget) break;

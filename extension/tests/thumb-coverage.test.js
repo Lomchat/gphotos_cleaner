@@ -128,3 +128,63 @@ test('an empty grid has its own signature', () => {
   installFakeDom([]);
   assert.equal(gridSignature(), '0');
 });
+
+/* -------------------------------------------------- only what is on screen */
+
+/**
+ * Google loads images for the tiles a user can see and leaves the rest of its
+ * rendered range blank. Counting every tile in the document therefore made the
+ * 90% target unreachable: the wait expired at every stop and the screenful was
+ * harvested with no images at all. It got worse the more tiles were rendered —
+ * which is exactly what zooming the page out does.
+ */
+function installViewportDom(tiles, { viewTop = 0, viewHeight = 800 } = {}) {
+  const node = (t) => ({
+    getAttribute: (name) => (name === 'href' ? t.href : null),
+    getBoundingClientRect: () => ({ top: t.top, bottom: t.top + 100, height: 100 }),
+    querySelector: (sel) => {
+      if (sel === 'img') {
+        return t.src ? { currentSrc: '', getAttribute: (n) => (n === 'src' ? t.src : null) } : null;
+      }
+      return null;
+    }
+  });
+  const nodes = tiles.map(node);
+  globalThis.document = { querySelectorAll: () => nodes };
+  return { top: viewTop, bottom: viewTop + viewHeight, height: viewHeight };
+}
+
+test('tiles far below the fold do not count against coverage', () => {
+  // 4 on screen with images, 40 rendered far below without: the old count gave
+  // 9% and waited forever; the honest answer is 100%.
+  const onScreen = [0, 100, 200, 300].map((top, i) => ({ href: `./photo/A${i}`, top, src: 'x' }));
+  const farBelow = Array.from({ length: 40 }, (_, i) => ({ href: `./photo/B${i}`, top: 4000 + i * 100 }));
+  const viewport = installViewportDom([...onScreen, ...farBelow]);
+  const cov = thumbCoverage({ viewport });
+  assert.equal(cov.total, 4, 'only the visible tiles are counted');
+  assert.equal(cov.ratio, 1);
+});
+
+test('a tile just past the edge still counts, within the margin', () => {
+  // The margin exists because Google starts loading slightly ahead, and a hard
+  // cut at the fold would flip the ratio around every scroll.
+  const viewport = installViewportDom([{ href: './photo/A', top: 850 }], { viewHeight: 800 });
+  assert.equal(thumbCoverage({ margin: 0.25, viewport }).total, 1);
+  assert.equal(thumbCoverage({ margin: 0, viewport }).total, 0);
+});
+
+test('missing images on screen still drag the ratio down', () => {
+  const tiles = [
+    { href: './photo/A', top: 0, src: 'x' },
+    { href: './photo/B', top: 100 },
+    { href: './photo/C', top: 200 },
+    { href: './photo/D', top: 300 }
+  ];
+  const viewport = installViewportDom(tiles);
+  assert.equal(thumbCoverage({ viewport }).ratio, 0.25);
+});
+
+test('with nothing on screen the scan is not blocked', () => {
+  const viewport = installViewportDom([{ href: './photo/A', top: 9000 }]);
+  assert.equal(thumbCoverage({ viewport }).ratio, 1, 'no visible tile means nothing to wait for');
+});
