@@ -40,6 +40,9 @@ const DEFAULTS = {
   thumbWaitPerImageMs: 45,
   thumbWaitMaxMs: 20000, // ceiling, whatever the arithmetic says
   thumbPollMs: 110,      // coverage polling (pricier than a plain count)
+  // How far past the viewport still counts as "waited for". Matches the margin
+  // thumbCoverage uses, so the region harvested is the region measured.
+  harvestMargin: 0.25,
   thumbStallMs: 1200,    // quiet time meaning "no more images are coming"
   coverage: null,        // seam: how loaded the grid is, for tests
   thumbGiveUpRatio: 0.5, // ...but only once at least half have arrived
@@ -134,6 +137,7 @@ export class Scanner {
       noDate: 0,        // no date at all, not even inherited
       dateCarried: 0,   // date inherited from the previous tile
       noUrl: 0,
+      deferred: 0,   // off-screen and imageless: left for a later stop
       repaired: 0,
       seeking: false,    // crossing the out-of-scope zone
       thumbRatio: 1,     // share of rendered tiles that have an image
@@ -272,6 +276,7 @@ export class Scanner {
       known: this.known.size,
       repaired: this.stats.repaired,
       noUrl: this.stats.noUrl,
+      deferred: this.stats.deferred,
       noDate: this.stats.noDate,
       dateCarried: this.stats.dateCarried,
       thumbRatio: this.stats.thumbRatio,
@@ -423,6 +428,26 @@ export class Scanner {
     this.lastGroupDate = lastGroupDate;
     const batch = [];
 
+    // The region we waited for. Google renders far more tiles than it loads
+    // images for, and `waitForThumbs` only ever asked about the visible ones —
+    // so harvesting the whole rendered range recorded hundreds of items whose
+    // image was never coming. Harvest what was waited for, and let the rest
+    // come back on a later stop: consecutive steps overlap by more than 80%,
+    // so every tile is visible at some point.
+    // Fails open on purpose. Deciding "not waited for" without being able to
+    // measure would defer every tile, the pass would collect nothing, and the
+    // scan would look like it had simply found an empty library. Recording an
+    // item that turns out to have no image is recoverable; collecting nothing
+    // at all is not.
+    const view = scroller.getBoundingClientRect?.();
+    const slack = view ? view.height * this.opts.harvestMargin : 0;
+    const inWaitedRegion = (el) => {
+      if (!view || !view.height) return true;
+      const box = el.getBoundingClientRect?.();
+      if (!box || !box.height) return true;
+      return box.bottom >= view.top - slack && box.top <= view.bottom + slack;
+    };
+
     for (const { el, groupDate } of entries) {
       // Read the id first: overlap between steps exceeds 80%, and fully
       // reading already-known tiles was most of the work per round.
@@ -465,11 +490,21 @@ export class Scanner {
         this.repairable.delete(id);
         this.stats.repaired++;
       } else {
+        // Not while seeking: that phase takes long strides without waiting for
+        // images at all, so its steps can exceed the waited region and a
+        // deferred tile might never be passed again.
+        if (!read.url && !this.window.seeking && !inWaitedRegion(el)) {
+          // Off screen and imageless: Google had no reason to load it yet.
+          // Recording it now would spend one of the run's slots on an item
+          // that cannot be analysed, and mark it known so nothing revisits it.
+          this.stats.deferred++;
+          continue;
+        }
         this.known.add(read.id);
         this.fresh.add(read.id);
         if (!read.url) {
           this.stats.noUrl++;
-          // Thumbnail not there yet. Register the item for repair: it will be
+          // Waited for and still no image. Register for repair: it will be
           // re-read next time we pass it, this scan or a later one. Otherwise
           // it counts as "known" and stays unanalysable forever.
           this.repairable.add(read.id);

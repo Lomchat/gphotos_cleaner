@@ -2615,7 +2615,11 @@ export class Panel {
         if (scanResult.repaired) {
           this.log(scanLog, `${nf(scanResult.repaired)} item(s) recovered their thumbnail and can now be analysed.`, 'ok');
         }
-        if (scanResult.thumbRatio != null) {
+        if (scanResult.deferred) {
+        this.log(scanLog,
+          `${nf(scanResult.deferred)} tile(s) left for a later stop: rendered but not yet loaded.`);
+      }
+      if (scanResult.thumbRatio != null) {
         this.state.settings.lastThumbRatio = scanResult.thumbRatio;
         this.persist();
         this.log(scanLog,

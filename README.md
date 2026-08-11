@@ -429,7 +429,20 @@ one; it now scales with how many images are actually missing.
 
 Each run reports the coverage it reached, because that is the number that says
 whether waiting longer would have helped or whether the images were never
-coming.
+coming. On the run that finally pinned this down it read **100%** — and 1,807 of
+2,000 items still had no image, which ruled the wait out entirely.
+
+The remaining cause was the harvest, not the wait. Google renders a wide band of
+tiles and loads images only for the visible ones; the scanner waited for the
+visible band and then recorded *everything rendered*, including hundreds of
+tiles below the fold whose image was never coming. Worse, each one consumed a
+slot in the run's limit. The harvest now covers exactly the region that was
+waited for, and tiles outside it are left for a later stop — safe because
+consecutive stops overlap by more than they advance.
+
+That check fails **open**: a tile whose position cannot be measured is recorded
+rather than deferred. Deferring everything would collect nothing and look
+exactly like an empty library.
 
 ### The "listed but never analysed" trap
 
@@ -451,7 +464,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 413 tests, no external dependencies
+npm test        # 418 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
