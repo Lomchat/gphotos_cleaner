@@ -228,12 +228,15 @@ export function thumbCoverage({ margin = 0.25, viewport } = {}) {
       if (box.bottom < view.top - slack || box.top > view.bottom + slack) continue;
     }
     total++;
-    const img = a.querySelector('img');
-    if (img && (img.currentSrc || img.getAttribute('src'))) {
-      ready++;
-      continue;
-    }
-    if (a.querySelector('[data-latest-bg]')) ready++;
+    // The same question the harvest asks: can a URL be read from this tile?
+    //
+    // This used to count the *presence* of an `img` or a `[data-latest-bg]`
+    // element. Google inserts both as part of the tile skeleton and fills them
+    // a moment later, so coverage reached 100% the instant the tiles appeared
+    // and the wait ended before a single image had arrived. The panel then
+    // reported full coverage beside thousands of items with no thumbnail —
+    // two notions of "ready" that never agreed.
+    if (tileThumbUrl(a)) ready++;
   }
 
   if (!total) return { total: 0, ready: 0, ratio: 1 };

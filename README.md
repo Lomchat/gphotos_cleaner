@@ -455,6 +455,20 @@ The recovery exists for items recorded by earlier versions, before that wait
 worked. It is a migration path, not a mechanism — once the backlog is gone it
 never runs again.
 
+### Waiting for a signal that was already true
+
+The wait had a budget, then an adaptive budget, then a viewport-aware coverage
+measure. None of it mattered, because coverage counted the *presence* of an
+`<img>` or a `data-latest-bg` holder — and Google inserts both with the tile
+skeleton, filling them a moment later. Coverage therefore hit 100% the instant
+the tiles appeared, the wait ended before a single image had arrived, and the
+panel cheerfully reported "100% of visible thumbnails were ready" beside
+thousands of items with no thumbnail.
+
+Coverage now asks exactly the question the harvest asks: can a URL be read from
+this tile? Two notions of "ready" is what produced that contradiction three
+separate times.
+
 ### No thumbnail, no record
 
 An item without its thumbnail is not listed at all. It could not be analysed, so
@@ -513,7 +527,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 426 tests, no external dependencies
+npm test        # 429 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
