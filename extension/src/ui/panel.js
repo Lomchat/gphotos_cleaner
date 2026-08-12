@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS = {
   lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
   lastAnalysisSplit: null, // where the per-photo work actually goes
   lastThumbRatio: null,  // images ready when the grid was harvested
+  lastRunStarved: false, // Google rendered tiles but served no images
   peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
 
@@ -1065,6 +1066,14 @@ export class Panel {
 
     // The coverage reached is the number that says whether waiting longer would
     // have helped or whether the images were never coming.
+    if (this.state.settings.lastRunStarved) {
+      box.append(el('div', { class: 'banner danger', style: 'margin-top:8px' },
+        el('b', {}, 'Google Photos served the grid without images. '),
+        'The tiles appeared, the pictures never did. That is on their side: '
+        + 'open photos.google.com yourself and check the grid actually fills in '
+        + 'before running again.'));
+    }
+
     const ratio = this.state.settings.lastThumbRatio;
     if (ratio != null) {
       box.append(el('div', { class: 'muted tiny' },
@@ -1389,7 +1398,7 @@ export class Panel {
         text: step.label,
         disabled: busy,
         title: step.factor === 1
-          ? 'Leave the page at its normal size'
+          ? 'Leave the page alone'
           : `Smaller page, about ${Math.round(1 / (step.factor * step.factor))}x the tiles per screen`
             + (step.factor === MIN_FACTOR ? " — Chrome's smallest" : ''),
         onclick: () => { s.scanZoom = step.factor; this.persist(); this.renderAll(); }
@@ -2615,10 +2624,16 @@ export class Panel {
         if (scanResult.repaired) {
           this.log(scanLog, `${nf(scanResult.repaired)} item(s) recovered their thumbnail and can now be analysed.`, 'ok');
         }
-        if (scanResult.deferred) {
+        if (scanResult.starved) {
+        this.log(scanLog,
+          'Stopped: Google Photos rendered the grid but served no images. '
+          + 'Nothing here can fix that — leave it a while and run again.', 'err');
+      }
+      if (scanResult.deferred) {
         this.log(scanLog,
           `${nf(scanResult.deferred)} tile(s) left for a later stop: rendered but not yet loaded.`);
       }
+      this.state.settings.lastRunStarved = !!scanResult.starved;
       if (scanResult.thumbRatio != null) {
         this.state.settings.lastThumbRatio = scanResult.thumbRatio;
         this.persist();

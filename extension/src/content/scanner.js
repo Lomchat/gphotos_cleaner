@@ -43,6 +43,10 @@ const DEFAULTS = {
   // How far past the viewport still counts as "waited for". Matches the margin
   // thumbCoverage uses, so the region harvested is the region measured.
   harvestMargin: 0.25,
+  // Stops in a row that yielded no usable thumbnail at all before concluding
+  // that Google is not delivering images and stopping with an explanation.
+  // Grinding on produces a catalogue of items that can never be analysed.
+  starvedStopsBeforeGivingUp: 6,
   thumbStallMs: 1200,    // quiet time meaning "no more images are coming"
   coverage: null,        // seam: how loaded the grid is, for tests
   thumbGiveUpRatio: 0.5, // ...but only once at least half have arrived
@@ -137,6 +141,8 @@ export class Scanner {
       noDate: 0,        // no date at all, not even inherited
       dateCarried: 0,   // date inherited from the previous tile
       noUrl: 0,
+      withUrl: 0,    // items recorded with a usable thumbnail
+      starved: 0,    // consecutive stops that produced no usable thumbnail
       deferred: 0,   // off-screen and imageless: left for a later stop
       repaired: 0,
       seeking: false,    // crossing the out-of-scope zone
@@ -199,6 +205,7 @@ export class Scanner {
     const resumeTop = scroller.scrollTop;
     let idleRounds = 0;
     let reachedBottom = false;
+    let starved = false;
     let limitReached = false;
 
     try {
@@ -217,8 +224,22 @@ export class Scanner {
           await this.waitForThumbs();
         }
 
+        const urlsBefore = this.stats.withUrl;
         await this.harvest(scroller.scrollTop);
         this.stats.rounds++;
+
+        // A stop that rendered tiles but produced no usable thumbnail means
+        // Google is serving the grid without images. That is not something to
+        // scroll through: every further stop records items that can never be
+        // analysed, and the run ends looking like a failure of this extension.
+        if (this.stats.withUrl === urlsBefore && dom.queryTiles().length) {
+          if (++this.stats.starved >= this.opts.starvedStopsBeforeGivingUp) {
+            starved = true;
+            break;
+          }
+        } else {
+          this.stats.starved = 0;
+        }
         this.stats.seeking = this.window.seeking;
         onProgress({ ...this.stats, ...dom.scrollerMetrics() });
 
@@ -297,6 +318,7 @@ export class Scanner {
       thumbWaitMs: this.stats.thumbWaitMs,
       stillSeeking: this.window.seeking,
       reachedBottom,
+      starved,
       limitReached,
       aborted: this.aborted,
       resumedFrom: plan.reason
@@ -502,6 +524,7 @@ export class Scanner {
         }
         this.known.add(read.id);
         this.fresh.add(read.id);
+        if (read.url) this.stats.withUrl++;
         if (!read.url) {
           this.stats.noUrl++;
           // Waited for and still no image. Register for repair: it will be

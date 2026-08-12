@@ -301,3 +301,31 @@ test('unreadable geometry records the tile rather than deferring it', () => {
   assert.match(guard, /if \(!view \|\| !view\.height\) return true;/);
   assert.match(guard, /if \(!box \|\| !box\.height\) return true;/);
 });
+
+/* ------------------------------------------------- when Google serves nothing */
+
+test('a run that gets no images at all gives up and says so', () => {
+  // Observed on a real library: the grid rendered its cells and Google served
+  // no pictures for half a minute, reload included. Scrolling through that
+  // records thousands of items that can never be analysed and ends looking
+  // like a failure of this extension.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  assert.match(source, /starvedStopsBeforeGivingUp/);
+  assert.match(source, /starved = true;\s*\n\s*break;/,
+    'the loop must stop, not merely count');
+  assert.match(source, /starved,/, 'the result must carry it to the caller');
+});
+
+test('the starvation counter resets as soon as an image arrives', () => {
+  // Otherwise a slow patch early in a run would end it much later, for a
+  // reason that had already gone away.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  assert.match(source, /} else \{\s*\n\s*this\.stats\.starved = 0;/);
+});
+
+test('a grid with no tiles at all is not mistaken for starvation', () => {
+  // No tiles means the page has not rendered yet, which is what the render
+  // wait is for. Only tiles-without-images means Google is not delivering.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  assert.match(source, /this\.stats\.withUrl === urlsBefore && dom\.queryTiles\(\)\.length/);
+});

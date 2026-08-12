@@ -58,7 +58,7 @@ Two controls bound the work, and a banner states what the next run will do:
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
   date. The useful direction for cleaning: purge the old, never touch the recent.
 - **Limit per run** — 2,000 by default; none, 500, 10,000 or a custom number.
-- **Page size while listing** — 75% by default. Google Photos renders
+- **Page size while listing** — 100% by default, i.e. the page is left alone. Google Photos renders
   exactly the tiles that fit the viewport and nothing beyond it (measured on a
   real library: zero tiles below the fold), so a smaller zoom puts more tiles on
   one screen and the scanner makes proportionally fewer stops — and a stop costs
@@ -444,6 +444,18 @@ That check fails **open**: a tile whose position cannot be measured is recorded
 rather than deferred. Deferring everything would collect nothing and look
 exactly like an empty library.
 
+### When Google serves the grid without images
+
+Sometimes none of the above is the problem. Observed on a real library: the grid
+rendered its cells and Google delivered no pictures at all — zero tiles carrying
+an image, for over thirty seconds, across a full reload. Nothing in an extension
+fixes that, and scrolling through it records thousands of items that can never
+be analysed, then reports 6% success as though the extension had failed.
+
+Six consecutive stops with no usable thumbnail now end the run with that said
+plainly, in the panel and not only in the log. The counter resets the moment an
+image arrives, so a slow patch early on does not end a run that recovered.
+
 ### The "listed but never analysed" trap
 
 The nastiest failure, because it raises no error: listing finds items, the engine
@@ -464,7 +476,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 418 tests, no external dependencies
+npm test        # 422 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

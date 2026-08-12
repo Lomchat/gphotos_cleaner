@@ -29,18 +29,17 @@ export const MIN_FACTOR = 0.25;
  * screen: 25% fits roughly sixteen times the area of 100%. Anything above 100%
  * would fit fewer, which is the opposite of the point.
  *
- * The default is deliberately the gentlest step that still does something.
- * Zooming out multiplies the images Google has to load before a stop can be
- * harvested, and a default of 50% turned a bad thumbnail-coverage case into an
- * almost total one before that was fixed. Twice the tiles per screen is worth
- * having; the steeper steps are there to be chosen, not assumed.
+ * The default leaves the page alone. Zooming out multiplies the images Google
+ * has to load before a stop can be harvested, and on a library where Google is
+ * already slow to deliver them that makes the run worse, not faster. The
+ * smaller steps are there to be chosen once a run is known to be healthy.
  */
-export const DEFAULT_FACTOR = 0.75;
+export const DEFAULT_FACTOR = 1;
 
 // Chrome's own preset steps, so the browser applies exactly what was asked for
 // rather than snapping to a neighbour.
 export const ZOOM_STEPS = [
-  { factor: 1, label: 'Off' },
+  { factor: 1, label: '100%' },
   { factor: 0.75, label: '75%' },
   { factor: 0.5, label: '50%' },
   { factor: 0.33, label: '33%' },
