@@ -245,62 +245,52 @@ test('the advice points at the wait that actually dominated', () => {
   assert.match(describe.call({}, { waitMs: 0, thumbWaitMs: 0 }), /No measurable/i);
 });
 
-/* ------------------------------------------------- harvesting what we waited for */
+/* --------------------------------------------- no thumbnail, no record */
 
 /**
- * Google renders far more tiles than it loads images for. The wait only ever
- * asked about the visible ones, so harvesting the whole rendered range recorded
- * hundreds of items whose image was never coming — 1,807 of 2,000 on a real
- * run, while the wait itself reported 100% coverage.
+ * An item without its thumbnail used to be recorded and marked for repair. It
+ * could not be analysed, it consumed one of the run's slots, it counted as
+ * "known" so nothing looked at it again, and undoing that needed a whole repair
+ * mechanism which itself could not reach them. On a real run: 1,420 of 2,000.
  *
- * Those tiles are now left for a later stop. That is only safe because
- * consecutive stops overlap: the region waited for is taller than the step.
+ * They are simply not recorded now. The cost is a second look on a later pass,
+ * by which time Google has loaded them.
  */
-test('the waited region is taller than the step between stops', () => {
-  // Otherwise a deferred tile could fall between two stops and never be seen.
+
+test('a tile with no thumbnail is skipped, not stored', () => {
   const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  const stepRatio = Number(/stepRatio:\s*([\d.]+)/.exec(source)[1]);
-  const margin = Number(/harvestMargin:\s*([\d.]+)/.exec(source)[1]);
-  const waited = 1 + 2 * margin;
-  assert.ok(waited > stepRatio,
-    `a ${stepRatio} step with a ${waited} window would leave gaps between stops`);
+  const guard = source.indexOf('if (!read.url && !this.window.seeking)');
+  assert.notEqual(guard, -1, 'the skip must be there');
+  const body = source.slice(guard, guard + 160);
+  assert.ok(body.includes('skippedNoThumb++'), 'the skip must be counted');
+  assert.ok(body.includes('continue;'), 'the skip must actually skip');
 });
 
-test('the harvest margin matches the one coverage measures', () => {
-  // The invariant that makes the deferral honest: harvest exactly the region
-  // the wait was about. If they drift apart, either tiles are recorded that
-  // were never waited for, or tiles are deferred that were.
-  const scanner = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  const adapter = readFileSync(new URL('../src/content/dom-adapter.js', import.meta.url), 'utf8');
-  const harvest = Number(/harvestMargin:\s*([\d.]+)/.exec(scanner)[1]);
-  const coverage = Number(/margin\s*=\s*([\d.]+)/.exec(adapter)[1]);
-  assert.equal(harvest, coverage);
+test('a skipped tile is not marked known, so it can be found again', () => {
+  // The whole point: `known` is what stops a later pass from looking, and
+  // `fresh` is what spends the run's limit. The skip must reach `continue`
+  // before either of them.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  const from = source.indexOf('this.stats.skippedNoThumb++');
+  const to = source.indexOf('continue;', from);
+  assert.ok(from !== -1 && to !== -1);
+  const between = source.slice(from, to);
+  assert.equal(/known\.add|fresh\.add/.test(between), false,
+    'nothing may be recorded between counting the skip and skipping');
 });
 
-test('deferral is skipped while seeking', () => {
-  // Seeking crosses the out-of-scope zone in strides wider than the waited
-  // region and without waiting for images, so a deferred tile there might never
-  // be passed again.
+test('skipping is reported so a bad pass is visible', () => {
   const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  assert.match(source, /!read\.url && !this\.window\.seeking && !inWaitedRegion\(el\)/);
+  assert.match(source, /skippedNoThumb: this\.stats\.skippedNoThumb/);
 });
 
-test('deferred tiles are counted, not silently dropped', () => {
+test('seeking still records what it keeps', () => {
+  // That phase strides past without waiting for images at all, and what it
+  // keeps are undated items it cannot judge. Skipping there would drop them.
   const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  assert.match(source, /this\.stats\.deferred\+\+/);
-  assert.match(source, /deferred: this\.stats\.deferred/);
+  assert.match(source, /!read\.url && !this\.window\.seeking/);
 });
 
-test('unreadable geometry records the tile rather than deferring it', () => {
-  // The dangerous direction. Deciding "not waited for" without being able to
-  // measure would defer every tile: the pass collects nothing and the scan
-  // looks like it found an empty library. Recording an item that turns out to
-  // have no image is recoverable; collecting nothing is not.
-  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  const guard = source.slice(source.indexOf('const inWaitedRegion'), source.indexOf('};', source.indexOf('const inWaitedRegion')));
-  assert.match(guard, /if \(!view \|\| !view\.height\) return true;/);
-  assert.match(guard, /if \(!box \|\| !box\.height\) return true;/);
-});
 
 /* ------------------------------------------------- when Google serves nothing */
 

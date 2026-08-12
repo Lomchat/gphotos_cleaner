@@ -1057,11 +1057,11 @@ export class Panel {
     box.append(
       el('b', {}, bloquant
         ? 'No usable thumbnails: analysis has nothing to work on.'
-        : `${nf(noThumb)} item(s) listed before their thumbnail arrived.`),
+        : `${nf(noThumb)} item(s) left over from an earlier version.`),
       el('br'),
       bloquant
         ? 'Items were listed, but no image URL could be extracted. Either scrolling outran image loading, or Google changed the host serving them.'
-        : 'Seen before their image loaded.'
+        : 'They were recorded without their image, which no longer happens. The next run collects them.'
     );
 
     // The coverage reached is the number that says whether waiting longer would
@@ -2639,9 +2639,12 @@ export class Panel {
           'Stopped: Google Photos rendered the grid but served no images. '
           + 'Nothing here can fix that — leave it a while and run again.', 'err');
       }
-      if (scanResult.deferred) {
+      if (scanResult.skippedNoThumb) {
+        const seen = scanResult.discovered + scanResult.skippedNoThumb;
+        const share = Math.round((scanResult.skippedNoThumb / seen) * 100);
         this.log(scanLog,
-          `${nf(scanResult.deferred)} tile(s) left for a later stop: rendered but not yet loaded.`);
+          `${nf(scanResult.skippedNoThumb)} tile(s) passed over: no image yet, so not listed (${share}% of what was seen).`
+          + (share > 40 ? ' Google is not keeping up — try a larger page size.' : ''));
       }
       this.state.settings.lastRunStarved = !!scanResult.starved;
       if (scanResult.thumbRatio != null) {

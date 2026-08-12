@@ -455,6 +455,21 @@ The recovery exists for items recorded by earlier versions, before that wait
 worked. It is a migration path, not a mechanism — once the backlog is gone it
 never runs again.
 
+### No thumbnail, no record
+
+An item without its thumbnail is not listed at all. It could not be analysed, so
+storing it bought nothing: it consumed one of the run's slots, counted as
+"known" so nothing looked at it again, and undoing that needed a repair
+mechanism which then could not reach it. On a real run that was 1,420 items of
+2,000.
+
+The cost is a second look on a later pass, by which time Google has loaded them.
+In exchange the catalogue only ever contains items that can actually be used,
+and "listed" and "analysable" stop being different numbers.
+
+The share passed over is reported after each run. A high one means the page size
+is set smaller than Google can keep up with.
+
 ### The backlog could never be repaired
 
 Items recorded without a thumbnail are marked for repair and re-read the next
@@ -498,7 +513,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 427 tests, no external dependencies
+npm test        # 426 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
