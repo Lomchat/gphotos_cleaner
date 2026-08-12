@@ -144,3 +144,41 @@ test('resizing twice does not stack size suffixes', () => {
   assert.equal(twice, once);
   assert.equal((twice.match(/=w/g) || []).length, 1);
 });
+
+/* ------------------------------------------------------- fetching them */
+
+/**
+ * Thumbnail URLs from the API need the session cookie, and no size suffix
+ * changes that — measured on a live library across `=w176-h176`, `-no`,
+ * `-k-no`, `=s176` and the bare URL: 403 without credentials, 200 with them.
+ *
+ * There has always been a retry for that case. What matters now is that it is
+ * remembered: URLs from the API are *all* of that kind, so an unconditional
+ * retry means two requests per photo, and fetching is the dominant cost of a
+ * run. These are source-level checks because both files run inside a worker.
+ */
+for (const file of ['../src/analysis/worker.js', '../src/analysis/people-runner.js']) {
+  const source = readFileSync(new URL(file, import.meta.url), 'utf8');
+  const name = file.split('/').pop();
+
+  test(`${name} still falls back to credentials on a refusal`, () => {
+    assert.match(source, /credentials: 'omit'/);
+    assert.match(source, /credentials: 'include'/);
+  });
+
+  test(`${name} does not pay for that fallback twice per photo`, () => {
+    assert.match(source, /needsCookie/,
+      'the refusing host must be remembered, or every thumbnail costs two requests');
+    const guard = source.indexOf('needsCookie.has(');
+    const add = source.indexOf('needsCookie.add(');
+    assert.ok(guard !== -1 && add !== -1 && guard < add,
+      'the check must come before the first fetch, not after it');
+  });
+
+  test(`${name} learns the host rather than assuming it`, () => {
+    // Hard-coding "the API hosts need cookies" would not correct itself if
+    // Google went back to token-bearing URLs.
+    assert.equal(/needsCookie = new Set\(\[/.test(source), false,
+      'the set must start empty and be filled by what actually refused');
+  });
+}

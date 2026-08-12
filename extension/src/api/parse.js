@@ -118,10 +118,17 @@ function toNumber(value) {
  * Add a size to a thumbnail base URL.
  *
  * The base carries none, and asking for one is how the cost of a run is
- * controlled: the analysis wants 176px, identity wants 512px. `authUser`
- * carries the account through on a multi-account session, where the bare URL
- * can be refused — the caller keeps the unsized original as a fallback either
- * way.
+ * controlled: the analysis wants 176px, identity wants 512px.
+ *
+ * What the size suffix does *not* do is make the URL public. Measured against a
+ * live library: every form of it — `=w176-h176`, `-no`, `-k-no`, `=s176`, bare
+ * — answers 403 without the session cookie and 200 with it. The engine sends
+ * credentials for these hosts (see `worker.js`); no suffix is a substitute.
+ *
+ * `authUser` is insurance for a secondary account, whose session path carries
+ * the number. It changes nothing on a default account, where it is never added,
+ * and it is untested on a second one — the caller keeps the unsized original as
+ * a fallback either way.
  */
 export function thumbUrl(base, size, { authUser = null } = {}) {
   if (!base) return null;

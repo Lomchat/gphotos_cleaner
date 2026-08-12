@@ -40,9 +40,23 @@ export const MIN_FACE_PX = 24;
 
 const DETECT_THRESHOLD = 0.75;
 
+/** See `worker.js`: URLs from the API always need the session cookie. */
+const needsCookie = new Set();
+
 async function fetchBitmap(url) {
-  let res = await fetch(url, { credentials: 'omit', cache: 'force-cache' });
-  if (!res.ok) res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+  let host;
+  try { host = new URL(url).hostname; } catch { host = url; }
+
+  let res;
+  if (needsCookie.has(host)) {
+    res = await fetch(url, { credentials: 'include', cache: 'force-cache' });
+  } else {
+    res = await fetch(url, { credentials: 'omit', cache: 'force-cache' });
+    if (!res.ok) {
+      needsCookie.add(host);
+      res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    }
+  }
   if (!res.ok) throw new Error(`thumbnail HTTP ${res.status}`);
   return createImageBitmap(await res.blob());
 }

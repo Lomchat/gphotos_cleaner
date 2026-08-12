@@ -300,12 +300,23 @@ which is where they were worked out.
 | Bulk metadata | `EWgK9e` | File name, byte size, storage actually used, original quality |
 | Move to bin | `XwAOJf` | The bin, recoverable for 60 days |
 
-**What this bought.** Listing 2,000 photos is four requests instead of roughly
-fifty scroll stops, and every item arrives complete. The date window became a
-parameter rather than a phase that scrolled past everything newer. Sizes and
-file names became available at all. And the entire class of bug described below
-disappeared, because nothing is rendered and therefore nothing can be read too
-early.
+**What this bought.** Measured against a live library, not estimated:
+
+| | scroll-and-harvest | API |
+|---|---|---|
+| 2,000 items | minutes, ~50 stops | **4.6 s, 4 requests** |
+| of which had a thumbnail | 164 on the worst run | **2,000** |
+| file names and sizes | unavailable | 400 in 1.1 s, 2 requests |
+| "only photos before 2025-08-12" | scroll past everything newer | a request parameter; 0 items came back newer |
+
+Every item arrives complete, so the whole class of bug described below
+disappeared: nothing is rendered, so nothing can be read too early.
+
+**One thing the size suffix does not do is make a thumbnail public.** Measured
+across `=w176-h176`, `-no`, `-k-no`, `=s176` and the bare URL: all of them are
+403 without the session cookie and 200 with it. The engine remembers which
+hosts refused and sends credentials directly, because retrying every thumbnail
+would double the dominant cost of a run.
 
 **What it costs.** An undocumented endpoint is no more stable than an
 undocumented DOM — it is the same bet, moved. What makes it a better bet is that
@@ -483,7 +494,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 474 tests, no external dependencies
+npm test        # 481 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
@@ -514,6 +525,15 @@ checks each module is declared, and that the token bridge is *not*.
 Model inference itself is validated separately, in a browser, against a real
 photograph. Unit tests prove the decoding maths; only a browser proves the model
 and runtime actually work under the extension's CSP.
+
+**What the tests cannot prove** is that Google still answers the way the tests
+say. The three read-only calls were exercised against a live library while this
+was written — 2,000 items over four pages, metadata for 400, the date window
+honoured to the day, zero items missing a thumbnail. The **move to bin** call
+was not: verifying it means deleting somebody's photos, and the shape it sends
+is pinned by tests and taken verbatim from a client known to work. If it ever
+stops working, the panel reports what Google refused rather than claiming a
+success.
 
 ### Vendored dependencies
 

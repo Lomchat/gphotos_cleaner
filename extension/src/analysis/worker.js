@@ -79,14 +79,35 @@ self.onmessage = async (ev) => {
   }
 };
 
+/**
+ * Hosts that have already answered 403 without a cookie.
+ *
+ * Some thumbnail URLs carry their own token and need no session; others refuse
+ * outright. There was a retry for the second case, which was fine while URLs
+ * came off the page — but URLs from the API are all of the second kind, so
+ * every thumbnail was being fetched twice, and fetching is the dominant cost of
+ * a run. Measured on a live library: `=w176-h176` on a
+ * photos.fife.usercontent.google.com URL is 403 without credentials and 200
+ * with them, whatever size suffix is used.
+ *
+ * The host is remembered rather than assumed, so this corrects itself if Google
+ * moves back to token-bearing URLs.
+ */
+const needsCookie = new Set();
+
 async function fetchOne(url) {
-  // Google thumbnails carry a token in the URL, so usually no cookie is needed.
-  // Some accounts still require the session, hence the retry with credentials.
-  let res = await fetch(url, { credentials: 'omit', cache: 'force-cache' });
-  if (!res.ok && (res.status === 401 || res.status === 403)) {
-    res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+  const host = hostOf(url);
+  let res;
+  if (needsCookie.has(host)) {
+    res = await fetch(url, { credentials: 'include', cache: 'force-cache' });
+  } else {
+    res = await fetch(url, { credentials: 'omit', cache: 'force-cache' });
+    if (!res.ok && (res.status === 401 || res.status === 403)) {
+      needsCookie.add(host);
+      res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    }
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${hostOf(url)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${host}`);
   const blob = await res.blob();
   if (!blob.size) throw new Error('Empty thumbnail');
   return createImageBitmap(blob);
