@@ -320,47 +320,27 @@ export async function getPending(limit = Infinity) {
 }
 
 /**
- * Ids of recorded items whose thumbnail URL is missing.
+ * Forget items entirely, faces included.
  *
- * Repairs a catalogue built while URL extraction was failing: without this
- * those items stay forever unanalysable, since the scanner treats them as known
- * and never re-reads them.
+ * Used after a move to the bin: the catalogue mirrors the library, so an item
+ * that is no longer in one has no business in the other. Its faces go too, or
+ * the people groups would keep counting a photo that no longer exists.
  */
-export async function getIdsMissingThumb() {
-  const store = await tx(STORE_ITEMS, 'readonly');
+export async function deleteItems(ids) {
+  const list = [...ids];
+  if (!list.length) return 0;
+  const db = await open();
   return new Promise((resolve, reject) => {
-    const out = new Set();
-    const req = store.index('analyzed').openCursor(IDBKeyRange.only(0));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return resolve(out);
-      if (!cursor.value.url) out.add(cursor.value.id);
-      cursor.continue();
-    };
-    req.onerror = () => reject(req.error);
-  });
-}
-
-/**
- * Items without a thumbnail still eligible for targeted repair.
- *
- * The attempt counter is essential: some items will never have a preview (video
- * still processing, unsupported format). Without it every run would fish them
- * out again and the work would never finish.
- */
-export async function getItemsMissingThumb(maxAttempts = 3) {
-  const store = await tx(STORE_ITEMS, 'readonly');
-  return new Promise((resolve, reject) => {
-    const out = [];
-    const req = store.index('analyzed').openCursor(IDBKeyRange.only(0));
-    req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) return resolve(out);
-      const v = cursor.value;
-      if (!v.url && (v.thumbAttempts || 0) < maxAttempts) out.push(v);
-      cursor.continue();
-    };
-    req.onerror = () => reject(req.error);
+    const t = db.transaction([STORE_ITEMS, STORE_FACES], 'readwrite');
+    const items = t.objectStore(STORE_ITEMS);
+    const faces = t.objectStore(STORE_FACES);
+    for (const id of list) {
+      items.delete(id);
+      const [low, high] = faceKeyBounds(id);
+      faces.delete(IDBKeyRange.bound(low, high));
+    }
+    t.oncomplete = () => resolve(list.length);
+    t.onerror = () => reject(t.error);
   });
 }
 

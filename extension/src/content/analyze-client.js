@@ -20,7 +20,7 @@
  */
 
 import { getPending as dbGetPending, saveFeatures as dbSaveFeatures } from './db.js';
-import { sleep as realSleep } from './scanner.js';
+import { sleep as realSleep } from './tiles.js';
 
 const DEFAULTS = {
   batchSize: 24,

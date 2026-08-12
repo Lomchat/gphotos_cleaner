@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "GPhotos Cleaner",
   "version": "0.1.0",
-  "description": "Analyses your Google Photos library locally and helps you decide what to delete. It ticks; you delete. Nothing leaves the browser.",
+  "description": "Analyses your Google Photos library locally and helps you decide what to delete. Deletion is a move to Google's bin, recoverable for 60 days. No image leaves the browser.",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -37,6 +37,17 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://photos.google.com/*"
+      ],
+      "js": [
+        "src/page/main-world.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
@@ -45,6 +56,7 @@
         "src/content/*.js",
         "src/ui/*.js",
         "src/common/*.js",
+        "src/api/*.js",
         "src/analysis/*.js"
       ],
       "matches": [

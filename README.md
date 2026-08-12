@@ -2,19 +2,26 @@
 
 A Chrome extension that analyses your Google Photos library **locally** and helps
 you decide what to delete: photos with no people, screenshots, documents, blurry
-or dark shots, near-duplicates, long videos, plus statistics by year, month and
-day.
+or dark shots, near-duplicates, long videos, oversized files, plus statistics by
+year, month and day.
 
-**It never deletes anything.** It ticks the items you chose in the Google Photos
-interface, then hands control back. You click "Move to bin" yourself, in Google's
-own UI, with its own counter and confirmation.
-
-No account access, no API keys, no server, no build step. A real face-detection
-model runs in your browser; nothing is uploaded anywhere.
+It lists your library through the same private API the Google Photos web app
+uses on itself — five hundred items per request, with dates, sizes and thumbnail
+URLs included. Everything it then does with them happens in your browser: no
+account access, no API keys, no server, no build step. A real face-detection
+model runs locally; no image is uploaded anywhere.
 
 It also groups your library by person — *"every photo without Grandma in it"*
-becomes a filter. That needs a 13 MB recognition model, downloaded once when you
-ask for it; everything else works without it.
+becomes a filter. That needs a 13 MB recognition model, downloaded once; every
+other feature works without it.
+
+**What it can remove.** One thing: a move to the bin, which is the same
+operation Google's own "Move to bin" button performs and which Google keeps
+recoverable for 60 days. There is no permanent-delete path in the code, and
+there is no restore path either — the bin is Google's to manage. Every deletion
+goes through a confirmation that states the count, the storage it frees, and
+what it will leave alone. If you would rather not hand that over, **Tick in
+Photos** still ticks your selection in Google's own grid and stops there.
 
 ---
 
@@ -49,55 +56,22 @@ Chrome 116 or newer.
 
 ## Usage
 
-**1 · Analyse.** One action. The extension scrolls the grid to list your items
-and analyses each thumbnail as it goes. Nothing in Google Photos is modified.
-Interruptible; progress is kept and a rerun resumes where it stopped.
+**1 · Analyse.** One action. The extension asks Google Photos for your library a
+page at a time and analyses each thumbnail as the pages arrive. Nothing in your
+library is modified. Interruptible; progress is kept and a rerun resumes where
+it stopped.
 
-Two controls bound the work, and a banner states what the next run will do:
+Three controls bound the work, and a banner states what the next run will do:
 
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
-  date. The useful direction for cleaning: purge the old, never touch the recent.
+  date. The useful direction for cleaning: purge the old, never touch the
+  recent. This is a request parameter, not a filter applied afterwards — the
+  listing simply starts at that date.
 - **Limit per run** — 2,000 by default; none, 500, 10,000 or a custom number.
-- **Page size while listing** — 25% by default, Chrome's smallest: about sixteen
-  times the tiles per screen, so about a sixteenth of the stops. Google Photos renders
-  exactly the tiles that fit the viewport and nothing beyond it (measured on a
-  real library: zero tiles below the fold), so a smaller zoom puts more tiles on
-  one screen and the scanner makes proportionally fewer stops — and a stop costs
-  a fixed settle wait, which is what makes listing slow. The panel counter-scales
-  so it keeps its size, and the zoom is restored when the run ends, fails, or the
-  page goes away.
-
-  The number is the page's scale, so smaller fits more: 25% holds about sixteen
-  times the area of 100%. That is Chrome's floor — its zoom range is 25% to
-  500% and `setZoom` clamps to it, so there is nothing further to offer. Every
-  step is one Chrome already has, because asking for a value in between makes it
-  snap to a neighbour and the panel would then counter-scale by a factor the
-  page is not using.
-
-  It only speeds up **listing**: the analysis fetches thumbnails by URL in the
-  background and does not care what is on screen. And the gain is not asserted —
-  each run reports items listed per stop, plus where its waiting went, so the
-  setting is judged on your own library rather than on a claim.
-
-  **Which fix helps depends on that split**, and the two point opposite ways.
-  Settling the grid costs the same whatever is on screen, so a wider viewport
-  divides it. Waiting for images costs the same per image, so a wider viewport
-  just waits for more at once and changes nothing — there the answer is a lower
-  **Thumbnail wait** in Settings. The panel says which one dominated.
-
-**Two cheaper tricks that do not work**, tested on a real library so nobody
-tries them again:
-
-  - *Shrinking the tiles with CSS.* Google Photos positions every tile
-    absolutely from inline styles its own code computes
-    (`width: 348px; height: 232px; transform: translate3d(…)`). A CSS override
-    shrinks tiles visually while the virtualiser keeps rendering the same slice,
-    leaving gaps and listing nothing extra.
-  - *Enlarging the viewport without zooming.* CSS `zoom` on the page grew the
-    scroll container from 775px to 3340px and the tile count did not move. Nor
-    did overriding `window.innerHeight` and `documentElement.clientHeight` in
-    the page's own world. Google Photos decides what to render from observed
-    chunks, not from a height it reads back — only real browser zoom moves it.
+- **Also fetch file names and sizes** — on by default. One extra request per 200
+  items, and the only source of a figure the grid never carried. It is what
+  makes the size filter, the size order and the "this frees 3.2 GB" line
+  possible.
 
 **2 · Sort.** The tab itself is a door: a summary and one button. The work
 happens in the wide view — criteria on the left, order buttons above, thumbnails
@@ -110,19 +84,22 @@ matches is ticked for you; that is the difference between a grid chosen by a
 rule and one nobody has judged.
 
 The number beside each criterion is exactly what that criterion alone would
-catch. A row of **order** buttons sits above the grid, sticky while it scrolls. An order never changes *what* is
-selected, only where it sits — it is a reason to look, not a filter:
+catch. A row of **order** buttons sits above the grid, sticky while it scrolls.
+An order never changes *what* is selected, only where it sits — it is a reason to
+look, not a filter:
 
 | Order | Puts first |
 |---|---|
 | Most suspicious | Photos tripping the most criteria at once |
 | Surely nobody | Where the detector is most confident no one is there |
 | Rarest people | People who barely appear elsewhere; your regulars sink |
+| Biggest files | What actually costs you storage |
 | Blurriest / Darkest | The worst of each |
 | Oldest / Newest | By date taken |
 
-Anything an order cannot judge — a video, an unanalysed photo — always sinks to
-the bottom rather than floating into the top, where people skim and tick.
+Anything an order cannot judge — a video, an unanalysed photo, an unmeasured
+file — always sinks to the bottom rather than floating into the top, where
+people skim and tick.
 
 Click a thumbnail to tick it. **Shift-click** takes the whole run between it and
 your last click, and while Shift is held that run is outlined in dashed amber so
@@ -130,26 +107,33 @@ you see what the click will take before you make it. The run adopts the anchor's
 state rather than toggling each tile, so a photo you deliberately spared never
 flips into the selection.
 
-**3 · Tick.** **Tick in Google Photos** walks your selection and ticks each item.
-Then the extension stops. Review, and delete with Google's own button if you want.
+**3 · Remove.** Two buttons, deliberately unequal.
 
-Ticking has to happen in Google's own grid — the checkbox exists only for tiles
-it has rendered, so there is no id to click at. What it avoids is doing that
-work twice: tiles already on screen are ticked where they are rather than being
-scrolled to the centre first, and each click is confirmed by watching the box
-rather than by sleeping a fixed 90 ms. The items are walked in grid order so the
-scroller only ever moves one way.
+**Move to bin** is the primary one. It asks first, in the panel rather than in a
+browser dialog — a native `confirm()` inside Google's page blocks everything,
+including the progress you are about to want. The confirmation states how many
+photos, roughly how much storage that frees and over how many of them that
+figure was actually measured, that they stay recoverable for 60 days, and what
+it will skip: anything shared into your library by somebody else, and anything
+listed by a version of this extension that did not record the key the call
+needs. A local catalogue entry is dropped only for the photos Google confirmed
+taking.
+
+**Tick in Photos** does what the extension used to do and nothing more: walks
+your selection, ticks each item in Google's own grid, and stops. Review and
+delete with Google's button. It has to happen in the grid — the checkbox exists
+only for tiles Google has rendered — so it is slower, and it is kept for the
+case where you would rather see the selection in Photos before parting with it.
 
 **Grouping by person.** One switch in the Analyse tab, **Also group photos by
 person**, ticked by default. With it on, each run additionally re-reads photos
 containing a face at a larger size, turns each face into an identity vector and
 groups them — and the first such run fetches the 13 MB recognition model, once.
 
-The switch *is* the consent, so it says so before anything runs: the size, the
-licence, and that unticking skips the download entirely. It is the only thing
-this extension ever fetches that is not one of your photos. If the download
-fails the run carries on without grouping — the visual analysis behind it took
-minutes and is worth keeping.
+The switch *is* the consent, so it says so before anything runs: the size, that
+it is the only non-photo download, and that unticking skips it entirely. If the
+download fails the run carries on without grouping — the visual analysis behind
+it took minutes and is worth keeping.
 
 The people themselves appear in the sorting view, directly under the **With /
 Without selected people** criteria they parameterise — tick who you mean, name
@@ -157,13 +141,12 @@ them if you like, and the name follows that person across rebuilds. There is no
 separate tab: picking who you mean belongs next to the box you just ticked, and
 a second pass you have to remember to launch is a second pass that never runs.
 
-Nothing else in the extension depends on it.
-
 ---
 
 ## What it detects
 
-All measurements are taken on the thumbnail, not the original file.
+Visual measurements are taken on the thumbnail, not the original file. Size and
+file name come from Google's own metadata.
 
 | Criterion | Method | Reliability |
 |---|---|---|
@@ -173,8 +156,13 @@ All measurements are taken on the thumbnail, not the original file.
 | **Near-duplicates** | dHash + aHash fingerprints, grouped by Hamming distance in a time window | Good |
 | **Screenshots** | Axis-aligned gradient energy, flat areas, small palette, screen aspect ratio, status bar | Fair |
 | **Documents** | Light desaturated background, bimodal histogram, text-line detection | Fair |
-| **Long videos** | Duration read from the tile | Good (duration stands in for file size, which Google does not expose) |
+| **Large files** | Storage actually used, from Google's metadata | Exact |
+| **Long videos** | Duration, from Google's metadata | Exact |
 | **A given person** | ArcFace `buffalo_s` embeddings, agglomerative grouping | Good — measured margin +0.34 between same and different people |
+
+An item with no size figure **never** matches "large files" and sinks to the
+bottom of the size order. Unknown is not small, and a filter someone reads as
+"the big ones" must not quietly include things nobody measured.
 
 ### Grouping by person
 
@@ -252,8 +240,12 @@ failing.
 ## How it works
 
 ```
-content.js ──▶ panel.js ──▶ scanner.js ──▶ dom-adapter.js ──▶ [Google Photos DOM]
-                  │              │
+main-world.js  ──▶ (page world: reads WIZ_global_data, posts the session tokens)
+      │
+      ▼
+content.js ──▶ panel.js ──▶ api-scanner.js ──▶ photos-api.js ──▶ batchexecute.js
+                  │                                                    │
+                  │                                        [Google Photos API]
                   │              └──▶ db.js (IndexedDB)
                   │
                   ├──▶ analyze-client.js ──▶ service-worker.js ──▶ offscreen.js
@@ -261,6 +253,8 @@ content.js ──▶ panel.js ──▶ scanner.js ──▶ dom-adapter.js ─�
                   │                                       fetch/CV pool   face pool
                   │                                        (8–16)          (2–6)
                   │                                     features.js   face-worker.js
+                  │
+                  ├──▶ trash-client.js ──▶ photos-api.js ──▶ [move to bin]
                   │
                   ├──▶ actions.js ──▶ dom-adapter.js ──▶ [ticking only]
                   │
@@ -272,28 +266,70 @@ content.js ──▶ panel.js ──▶ scanner.js ──▶ dom-adapter.js ─�
 
 | File | Role |
 |---|---|
-| `src/content/dom-adapter.js` | **All** coupling to the Google Photos DOM |
-| `src/content/scanner.js` | Scrolling, harvesting, resume cursor, time window |
+| `src/page/main-world.js` | The only file running in the page's own world: reads the session tokens and posts them across |
+| `src/api/tokens.js` | What those obfuscated keys mean |
+| `src/api/batchexecute.js` | The wire format, and telling its failure modes apart |
+| `src/api/parse.js` | Google's positional arrays → named fields |
+| `src/api/photos-api.js` | The four calls this extension makes |
+| `src/content/api-scanner.js` | Paging, the date window, the run limit, the resume cursor |
+| `src/content/trash-client.js` | Deciding what can be binned, then binning it |
+| `src/content/dom-adapter.js` | **All** remaining coupling to the Google Photos DOM |
 | `src/content/analyze-client.js` | Batching and refill loop |
-| `src/content/actions.js` | Ticking in Google Photos (no deletion) |
+| `src/content/actions.js` | Ticking in Google Photos |
 | `src/analysis/features.js` | Classical vision primitives, pure and tested |
 | `src/analysis/face-postprocess.js` | Model output decoding, pure and tested |
 | `src/analysis/face-pool.js` / `face-worker.js` | Neural detection |
 | `src/common/filters.js` | Predicates, duplicate grouping, statistics |
+| `src/common/images.js` | Recognising Google image URLs and asking for a size |
 | `src/analysis/cluster.js` | Grouping faces into people, pure and tested |
-| `src/analysis/face-crop.js` | Detection box to model patch, pure and tested |
 | `src/content/people-client.js` | The People pass: what to read, what to keep |
 | `src/ui/panel.js` | Interface, inside a Shadow DOM |
+
+### The API, and what it costs
+
+Google Photos talks to itself over an endpoint called `batchexecute`: a POST
+carrying one or more calls, each named by an obfuscated id, with arguments as a
+JSON string nested inside another JSON string. It is entirely undocumented. The
+wire format, the four call ids and every array index are adapted from
+[Google-Photos-Toolkit](https://github.com/xob0t/Google-Photos-Toolkit) (MIT),
+which is where they were worked out.
+
+| Call | id | What it gives |
+|---|---|---|
+| Timeline by date taken | `lcxiM` | 500 items per request: media key, dedup key, capture time, thumbnail URL, dimensions, duration, archived, favourite, ownership |
+| Bulk metadata | `EWgK9e` | File name, byte size, storage actually used, original quality |
+| Move to bin | `XwAOJf` | The bin, recoverable for 60 days |
+
+**What this bought.** Listing 2,000 photos is four requests instead of roughly
+fifty scroll stops, and every item arrives complete. The date window became a
+parameter rather than a phase that scrolled past everything newer. Sizes and
+file names became available at all. And the entire class of bug described below
+disappeared, because nothing is rendered and therefore nothing can be read too
+early.
+
+**What it costs.** An undocumented endpoint is no more stable than an
+undocumented DOM — it is the same bet, moved. What makes it a better bet is that
+the failure is *loud*: a renamed field throws a shape error naming the call,
+where a changed CSS class silently listed zero items. The transport tells four
+failures apart — HTTP, expired session, malformed response, network — because
+each deserves a different answer, and only one of them is worth retrying.
+
+The session credentials live in `window.WIZ_global_data`, which an isolated
+content script cannot see: the object is genuinely not there. So one small file
+runs in the page's own world, copies six values and posts them to our own origin
+— never to `*`. It interprets nothing, because it shares a global scope with
+Google's application. It lives outside `src/content/` precisely so it is not
+web-accessible: everything in there is, and the file that reads session tokens
+must not be.
 
 ### Design decisions worth knowing
 
 **The recognition model is not vendored.** InsightFace weights are licensed for
 non-commercial research use and this repository is MIT, so shipping the file
 would redistribute it under terms the repository cannot grant. It is fetched
-once, on an explicit click, and cached in the extension's own IndexedDB. No host
-permission is asked for: the download answers with permissive CORS headers, and
-widening `host_permissions` permanently for a once-per-install need would be a
-bad trade.
+once and cached in the extension's own IndexedDB. No host permission is asked
+for: the download answers with permissive CORS headers, and widening
+`host_permissions` permanently for a once-per-install need would be a bad trade.
 
 **"Not analysed" is never "nobody in it".** A photo the People pass has not read
 has no `people` field, and the *Without selected people* predicate refuses to
@@ -302,11 +338,13 @@ filter the user reads as "definitely without them" — and the criterion is also
 force-unticked the moment it becomes unusable, so a box showing "off" can never
 still be filtering.
 
-**The extension cannot delete.** An earlier version could: it found the "Move to
-bin" button, handled the confirmation dialog, batched the work, verified a
-counter before destroying, and offered a dry-run mode so you could distrust it.
-All of it is gone. What remains is one action undone by a single click, and the
-counter that matters is Google's, not ours.
+**Deletion is one operation, and it is reversible.** The extension can move
+items to the bin. It cannot empty the bin, cannot delete permanently, and cannot
+restore — Google's own interface does all three. That reversibility is what
+makes shipping a delete button acceptable at all, so it is stated on the
+confirmation rather than buried here. A local row is removed only after Google
+confirms taking the photo: a catalogue entry deleted for something still in the
+library would hide it from every later run, which is the quiet kind of wrong.
 
 **Two pools, deliberately.** Fetching is network-bound and wants many workers;
 inference is CPU-bound and each session carries its own WebAssembly heap. One
@@ -340,8 +378,8 @@ it can be blurry, black or empty while the video is not.
 ## Runtime
 
 Feature extraction costs ~1.5 ms per image; face detection ~96 ms on one worker,
-parallelised across the detector pool. Thumbnail download remains a major cost.
-By default there is no limit: listing runs to the end of the library.
+parallelised across the detector pool. Thumbnail download remains the dominant
+cost, and listing is now a rounding error beside it.
 
 Settings that matter (*Settings → Speed*):
 
@@ -349,46 +387,13 @@ Settings that matter (*Settings → Speed*):
 |---|---|
 | **Thumbnail size** (176px) | Dominant transfer cost. Tests verify hashes stay comparable at this scale and the sharp/blurry ordering is preserved; face detection was measured to hold up too. |
 | **Concurrent batches** (3) | The main lever on a fast connection. |
-| **Scroll step** (0.82) | Fraction of the viewport per step. |
-| **Max render wait** | A ceiling, not a target; the real wait adapts. |
-
-### Two subtleties that caused real bugs
-
-**"Nothing is moving" is ambiguous.** Mid-list it means rendering finished; at
-the bottom of an infinite list it means the next page has not loaded. An early
-version treated both alike and declared the library exhausted after a few hundred
-items. The wait is now *referenced*: after scrolling we wait for the grid
-signature to **change**, then settle, with a growing budget.
-
-**Google Photos fills the grid in two passes** — tiles first, images second.
-Watching only the structure harvested items whose `<img>` had no source yet. The
-signature now counts loaded thumbnails, a dedicated wait targets 90% coverage,
-and stragglers are recovered automatically at the end of a run (3 attempts each;
-above 500 items a fresh pass is faster and the extension says so).
-
----
-
-## When Google changes something
-
-The markup is obfuscated and changes without notice. **All knowledge of it lives
-in `src/content/dom-adapter.js`.** Diagnostics appear inside the relevant alert
-banners, when a problem occurs, rather than in a panel nobody opens in time.
-
-| Symptom | Where to look |
-|---|---|
-| "Scroll container not found" | `findScroller` |
-| 0 tiles detected | `TILE_SELECTOR` |
-| **Items listed but 0 analysed** | `GOOGLE_IMAGE_HOST`, or the thumbnail wait is too short |
-| Missing thumbnail URLs | `tileThumbUrl` |
-| Missing dates | `parseDateFromText`, `HEADER_SELECTOR` |
-| "Checkbox not found" | `CHECKBOX_SELECTOR`, `findCheckbox` |
 
 ### Where the analysis time goes
 
-Every run now reports its own split, because guessing here has been wrong twice
-and the four phases answer to completely different fixes. Measured in Chrome,
-warm, 16 analysis workers over local images — so the fetch column is a floor,
-not what a real network costs:
+Every run reports its own split, because guessing here has been wrong twice and
+the four phases answer to completely different fixes. Measured in Chrome, warm,
+16 analysis workers over local images — so the fetch column is a floor, not what
+a real network costs:
 
 | Phase | Per photo | Share |
 |---|---|---|
@@ -402,123 +407,74 @@ total, though — measured 247 to 265 photos/s going from 5 workers to 12 — so
 queue is not where the time sits either. On a real library the fetch column
 grows by an order of magnitude and becomes the answer.
 
-The panel prints this after every run, with the phase that dominated named.
+---
 
-### Waiting for images, not just for tiles
+## What the DOM scanner taught, before it was deleted
 
-Google Photos renders tiles first and their images second. Harvest in between
-and the item is recorded with no thumbnail, which can never be analysed — and
-repairing one means walking the whole grid again. So each stop waits for images
-before moving on, up to five seconds, aiming at 90% coverage.
+Listing used to work by scrolling the grid and reading tiles. It is preserved at
+the tag `dom-scanner-v1` and is worth one section, because the whole class of
+failure is instructive and none of it is obvious from the outside.
 
-That wait has an early exit for the tail: the last image or two that never come.
-It used to fire after three quiet polls — about a third of a second, which is
-shorter than Google takes to deliver the *first* image deep in a large library.
-Quiet time is now measured in milliseconds rather than polls, and giving up
-early requires at least half the images to be in already: "none have arrived
-yet" means the page has not started, which is the opposite of "no more are
-coming".
+Google Photos virtualises the grid and fills it in two passes: tile skeletons
+first, images second. Harvest between the two and the item is recorded with no
+thumbnail — listed, counted, and permanently unanalysable. On a real run that
+was **1,836 of 2,000 items**.
 
-Two further things made that wait pointless on a zoomed-out grid. Coverage was
-measured over **every tile in the document**, but Google only loads images for
-what the user can see and leaves the rest of its rendered range blank — so the
-90% target was unreachable, the budget expired at every stop, and the screenful
-was harvested with no images at all. It now counts only the tiles in or near the
-viewport. And the budget itself was a flat five seconds, generous for the forty
-tiles of an unzoomed screen and hopeless for the three hundred of a zoomed-out
-one; it now scales with how many images are actually missing.
+Five explanations were wrong before the real one. The stall detector was too
+impatient; then coverage counted tiles Google never intended to load; then the
+harvest recorded a wider band than it had waited for; then a starvation guard
+killed the repair passes. Each fix was reasonable and none of them worked. The
+actual cause: coverage measured the *presence* of an `<img>` element, and Google
+inserts that with the skeleton and fills it a moment later — so coverage read
+100% the instant the tiles appeared and the wait never ran at all. The panel
+cheerfully reported "100% of thumbnails ready" beside thousands of items with no
+thumbnail.
 
-Each run reports the coverage it reached, because that is the number that says
-whether waiting longer would have helped or whether the images were never
-coming. On the run that finally pinned this down it read **100%** — and 1,807 of
-2,000 items still had no image, which ruled the wait out entirely.
+Two lessons survive into the current design:
 
-The remaining cause was the harvest, not the wait. Google renders a wide band of
-tiles and loads images only for the visible ones; the scanner waited for the
-visible band and then recorded *everything rendered*, including hundreds of
-tiles below the fold whose image was never coming. Worse, each one consumed a
-slot in the run's limit. The harvest now covers exactly the region that was
-waited for, and tiles outside it are left for a later stop — safe because
-consecutive stops overlap by more than they advance.
+- **Two notions of "ready" is how you get a contradiction three times.** The
+  check and the thing it guards must ask the identical question.
+- **Do not record what you cannot use.** An item without a thumbnail is not
+  listed at all. Storing it consumed a slot in the run's limit, counted as
+  "known" so nothing looked at it again, and needed a repair mechanism that
+  could not reach it — it sat *behind* the resume cursor.
 
-That check fails **open**: a tile whose position cannot be measured is recorded
-rather than deferred. Deferring everything would collect nothing and look
-exactly like an empty library.
+The API removes the premise rather than fixing the mechanism: an item and its
+thumbnail URL arrive in the same response, so there is no in-between state to
+read too early. `skippedNoThumb` is still counted and reported, and should
+always be zero — if it stops being zero, something changed on Google's side and
+saying so beats a silent gap.
 
-### Why there is a recovery at all
+---
 
-There should not need to be one. A stop now waits for the images it can
-actually see, with a budget that grows with how many are missing, and that is
-enough: a run over a healthy grid lists and analyses every item it finds.
+## When Google changes something
 
-The recovery exists for items recorded by earlier versions, before that wait
-worked. It is a migration path, not a mechanism — once the backlog is gone it
-never runs again.
+There are now two surfaces, and they fail differently.
 
-### Waiting for a signal that was already true
+**The API** (`src/api/`). A change here is loud: the transport reports a shape
+error naming the call, and the panel prints it. Recovery is a matter of finding
+the new index or call id.
 
-The wait had a budget, then an adaptive budget, then a viewport-aware coverage
-measure. None of it mattered, because coverage counted the *presence* of an
-`<img>` or a `data-latest-bg` holder — and Google inserts both with the tile
-skeleton, filling them a moment later. Coverage therefore hit 100% the instant
-the tiles appeared, the wait ended before a single image had arrived, and the
-panel cheerfully reported "100% of visible thumbnails were ready" beside
-thousands of items with no thumbnail.
+| Symptom | Where to look |
+|---|---|
+| "not signed in" on a page where you plainly are | `TOKEN_KEYS` in `tokens.js`; the MAIN-world script may be reading a renamed key |
+| "got a web page instead of data" | The session expired — sign in again |
+| "no wrb.fr frame" / "the payload was not JSON" | `parseEnvelope`; the envelope format changed |
+| Items listed with no date, or no size | The indices in `parse.js` |
+| Nothing listed at all | The `lcxiM` request shape in `photos-api.js` |
+| Deletions accepted but nothing disappears | `dedupKey` — the trash call takes it, not the media key |
 
-Coverage now asks exactly the question the harvest asks: can a URL be read from
-this tile? Two notions of "ready" is what produced that contradiction three
-separate times.
+**The DOM** (`src/content/dom-adapter.js`), which now only serves ticking:
 
-### No thumbnail, no record
+| Symptom | Where to look |
+|---|---|
+| "Scroll container not found" | `findScroller` |
+| 0 tiles detected | `TILE_SELECTOR` |
+| "Checkbox not found" | `CHECKBOX_SELECTOR`, `findCheckbox` |
+| Thumbnails listed but 0 analysed | `GOOGLE_IMAGE_HOST` in `src/common/images.js` |
 
-An item without its thumbnail is not listed at all. It could not be analysed, so
-storing it bought nothing: it consumed one of the run's slots, counted as
-"known" so nothing looked at it again, and undoing that needed a repair
-mechanism which then could not reach it. On a real run that was 1,420 items of
-2,000.
-
-The cost is a second look on a later pass, by which time Google has loaded them.
-In exchange the catalogue only ever contains items that can actually be used,
-and "listed" and "analysable" stop being different numbers.
-
-The share passed over is reported after each run. A high one means the page size
-is set smaller than Google can keep up with.
-
-### The backlog could never be repaired
-
-Items recorded without a thumbnail are marked for repair and re-read the next
-time the scan passes them. But they sit *behind* the saved position, and a
-resumed run moves forward — so "run again, a fresh pass picks them up" was
-advice the extension could not follow. The backlog only ever grew.
-
-Above 200 such items the next run now ignores the cursor and starts from the
-top, which is the only way to pass them again. Below that it resumes as before:
-re-walking a library to recover a dozen items is not a trade worth making.
-
-### When Google serves the grid without images
-
-Sometimes none of the above is the problem. Observed on a real library: the grid
-rendered its cells and Google delivered no pictures at all — zero tiles carrying
-an image, for over thirty seconds, across a full reload. Nothing in an extension
-fixes that, and scrolling through it records thousands of items that can never
-be analysed, then reports 6% success as though the extension had failed.
-
-Six consecutive stops with no usable thumbnail now end the run with that said
-plainly, in the panel and not only in the log. The counter resets the moment an
-image arrives, so a slow patch early on does not end a run that recovered.
-
-### The "listed but never analysed" trap
-
-The nastiest failure, because it raises no error: listing finds items, the engine
-answers, the queue is empty, the counter stays at zero. It happens when Google
-changes the host serving thumbnails — the URL stops being recognised, the item is
-stored without an image, and `getPending` never sees it.
-
-Two safeguards: a red banner lists the **image hosts actually observed**, and
-listing **repairs the catalogue** by re-reading known items that lack a URL.
-
-Adding a domain takes two edits, and **both are required**: `GOOGLE_IMAGE_HOST`
-in `dom-adapter.js`, and `host_permissions` in `manifest.json` so the fetch is
+Adding an image domain takes two edits, and **both are required**:
+`GOOGLE_IMAGE_HOST`, and `host_permissions` in `manifest.json` so the fetch is
 not blocked by CORS. A test verifies every recognised host has a permission.
 
 ---
@@ -527,20 +483,33 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 429 tests, no external dependencies
+npm test        # 474 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
 
 Tests cover the classical vision primitives (deterministic synthetic images),
-model output decoding, date parsing, filtering and grouping, consistency
-invariants between counters and filters, and the contract between the manifest
-and the import chain.
+model output decoding, filtering and grouping, consistency invariants between
+counters and filters, the contract between the manifest and the import chain,
+and — since the migration — the API wire format itself.
 
-That last one deserves a note: the panel is loaded by dynamic import, and every
-module reached that way must appear in `web_accessible_resources`, or Chrome
-refuses the import — **silently**. `tests/manifest.test.js` walks the real import
-graph and checks each module is declared.
+Those last ones are the specification, not a regression net: the request shapes
+and array indices are undocumented, so `tests/api-transport.test.js`,
+`tests/api-parse.test.js` and `tests/photos-api.test.js` record the exact form
+known to work. `tests/tokens.test.js` additionally checks that the two files
+which both have to know the token key list still agree — a MAIN-world content
+script cannot import, so that list is duplicated, and drift there produces a 400
+with no explanation anywhere.
+
+`tests/trash.test.js` pins the rules around the only destructive action: never
+without a dedup key, never a size figure that was not measured, never a
+confirmation left standing after the selection changed, and no permanent-delete
+call anywhere in the source.
+
+The manifest test deserves a note too: the panel is loaded by dynamic import,
+and every module reached that way must appear in `web_accessible_resources`, or
+Chrome refuses the import — **silently**. It walks the real import graph and
+checks each module is declared, and that the token bridge is *not*.
 
 Model inference itself is validated separately, in a browser, against a real
 photograph. Unit tests prove the decoding maths; only a browser proves the model
@@ -570,23 +539,33 @@ Session creation is paid once per worker, five of them, so that first column was
 about five seconds of every startup. `tests/vendor.test.js` pins the file's hash
 so a hand re-vendoring cannot quietly undo it.
 
-Committed rather than fetched: the extension must install with "Load unpacked"
-and no build step, and a model downloaded at runtime would break the promise that
-nothing leaves the browser.
+### Credits
+
+The `batchexecute` wire format, the call ids and the response indices come from
+[Google-Photos-Toolkit](https://github.com/xob0t/Google-Photos-Toolkit) by
+xob0t, MIT licensed. The files here are a port rather than a copy — the parsing
+is narrower, the failure modes are separated, and the calls are wrapped in
+retry, chunking and cancellation this extension needs — but the knowledge is
+theirs, and it would have taken a long time to work out alone.
 
 ---
 
 ## Privacy
 
-No data leaves the browser. Thumbnails are downloaded from Google's servers —
-exactly as the page itself would — analysed in memory, and the model runs
-locally. The catalogue stays in IndexedDB on the photos.google.com origin. No
-third-party requests, no telemetry.
+No image data leaves the browser. The library is listed through Google's own
+private API using your existing session, exactly as the page itself would;
+thumbnails are downloaded from Google's servers and analysed in memory; the
+model runs locally. The catalogue stays in IndexedDB on the photos.google.com
+origin. No third-party requests, no telemetry.
 
 The People pass adds exactly one non-photo request, the first time you use it:
 the recognition model, from Hugging Face. Face vectors are computed in the
 browser and stored in IndexedDB alongside the catalogue; the header **↺** clears
 them with everything else.
+
+The session tokens the API needs are read from the page and used only to talk to
+photos.google.com. They are posted to our own origin, never broadcast, and never
+stored.
 
 The **↺** button in the panel header resets the extension to a fresh-install
 state immediately, with no confirmation. It is inert during a run.
@@ -595,22 +574,26 @@ state immediately, with no confirmation. It is inert during a run.
 
 ## Known limitations
 
-- The Google Photos tab must stay in the foreground while listing runs.
 - Analysis works on 176px thumbnails: very slight blur or very fine text can go
   unnoticed.
 - Face detection was validated on public-domain photographs, not on a benchmark
   suite. Small faces in wide scenes are the likeliest misses.
-- Shared albums and archived items are only seen if the current view shows them.
-- Ticking several thousand items slows the Google Photos interface down.
+- Items shared into your library by someone else are listed but cannot be
+  binned; the confirmation says how many it is leaving alone.
+- Photos listed by a version before the API migration have no dedup key, so they
+  cannot be binned either. Listing again through the API gives them one.
+- Ticking several thousand items slows the Google Photos interface down. Moving
+  to the bin does not — it never touches the grid.
 - Person grouping has no landmark alignment, which inflates same-person
   distances. The measured margin is +0.34 rather than the +0.50 a larger model
   reaches, so a group flagged **mixed?** in the panel deserves a look before you
   act on it.
 - The recognition weights are licensed for non-commercial research use, which is
   why they are downloaded rather than bundled.
-- Automating a web interface sits in a grey area of Google's terms of service.
-  The extension acts only on your own account and uses no private API — but the
-  responsibility is yours.
+- The listing API is private and undocumented. Google can change it without
+  notice, and this extension uses it on your own account only — but automating a
+  web service sits in a grey area of Google's terms, and the responsibility is
+  yours.
 
 ---
 
@@ -618,11 +601,12 @@ state immediately, with no confirmation. It is inert during a run.
 
 Issues and pull requests welcome. Two things to know:
 
-- **`dom-adapter.js` is where Google breakage lands.** Include what the built-in
-  diagnostics reported.
+- **`src/api/` is where Google breakage lands now**, with `dom-adapter.js` a
+  distant second. Include what the panel reported: the errors name the call.
 - **Tests are the specification.** Several encode decisions that are easy to
   reverse by accident — trusted-by-name detection methods, videos exempt from
-  quality criteria, counters matching filters exactly. If a change makes one
+  quality criteria, counters matching filters exactly, unknown sizes never
+  counting as small, no deletion without a confirmation. If a change makes one
   fail, the question is whether the decision should change, not the test.
 
 ## Licence

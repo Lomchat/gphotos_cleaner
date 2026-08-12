@@ -17,6 +17,7 @@ export const DEFAULT_FILTERS = {
     bright: false,
     duplicates: false,
     longVideo: false,
+    largeFile: false,
     dateRange: false,
     withPerson: false,
     withoutPerson: false
@@ -33,6 +34,7 @@ export const DEFAULT_FILTERS = {
   dupWindow: 80,        // temporal neighbourhood scanned
   dupKeep: 'sharpest',  // 'sharpest' | 'first' | 'last' | 'none'
   longVideoSec: 120,
+  largeFileMb: 20,      // known only for items listed through the API
   from: null,
   to: null,
   personIds: [],        // groups selected in the People tab
@@ -180,6 +182,12 @@ export const CRITERION_TESTS = {
   bright: (it, f) => !!it.features && !it.isVideo && it.features.brightScore >= f.brightMin,
   duplicates: (it, f, dup) => dup.has(it.id),
   longVideo: (it, f) => !!it.isVideo && (it.duration ?? 0) >= f.longVideoSec,
+
+  // Size comes from the API's metadata pass. An item with no figure never
+  // matches: "unknown size" must not be presented as "small enough to ignore"
+  // — nor, worse, swept up by a filter the user reads as "the big ones".
+  largeFile: (it, f) => itemBytes(it) >= f.largeFileMb * 1024 * 1024,
+
   dateRange: (it, f) =>
     (f.from == null || (it.ts != null && it.ts >= f.from)) &&
     (f.to == null || (it.ts != null && it.ts <= f.to)),
@@ -196,6 +204,18 @@ export const CRITERION_TESTS = {
     Array.isArray(it.people) && f.personIds.length > 0 &&
     !it.people.some((g) => f.personIds.includes(g))
 };
+
+/**
+ * What an item actually costs, in bytes.
+ *
+ * `spaceTaken` is what it uses against the storage quota and `size` is the file
+ * on disk; they differ for anything Google re-encoded in storage-saver mode.
+ * The quota figure comes first because freeing quota is the point of the
+ * exercise. Zero means unknown, and unknown is never treated as large.
+ */
+export function itemBytes(item) {
+  return item.spaceTaken || item.sizeBytes || 0;
+}
 
 export const CRITERION_KEYS = Object.keys(CRITERION_TESTS);
 
@@ -337,6 +357,15 @@ export const SORTS = {
     dir: 1,
     needsPeople: true
   },
+  biggest: {
+    label: 'Biggest files',
+    hint: 'What actually costs you storage, heaviest first.',
+    key: (it) => itemBytes(it) || null,
+    dir: -1,
+    // Nothing has a size until the metadata pass has run, and an order over a
+    // library where every key is null is just the tie-break wearing a label.
+    needsSizes: true
+  },
   blurry: {
     label: 'Blurriest',
     hint: 'Softest images first.',
@@ -417,6 +446,8 @@ export function computeStats(items) {
   let analyzed = 0;
   let noDate = 0;
   let videoSeconds = 0;
+  let bytes = 0;
+  let sized = 0;
   const traits = {
     noFace: 0, hasFace: 0, screenshot: 0, document: 0, blurry: 0, dark: 0, bright: 0
   };
@@ -427,6 +458,8 @@ export function computeStats(items) {
       videoSeconds += it.duration || 0;
     }
     if (it.analyzed) analyzed++;
+    const b = itemBytes(it);
+    if (b) { bytes += b; sized++; }
     if (it.ts == null) {
       noDate++;
     } else {
@@ -449,6 +482,11 @@ export function computeStats(items) {
     videos,
     videoSeconds,
     noDate,
+    // Storage is only known for what the size pass has covered, so the count it
+    // is based on travels with it — "1.2 GB" over a tenth of the library is a
+    // different statement from "1.2 GB" over all of it.
+    bytes,
+    sized,
     traits,
     byYear: sortedEntries(byYear),
     byMonth: sortedEntries(byMonth),
@@ -476,6 +514,7 @@ export const CRITERION_LABELS = {
   bright: 'Overexposed',
   duplicates: 'Duplicate',
   longVideo: 'Long video',
+  largeFile: 'Large file',
   dateRange: 'Date range',
   withPerson: 'With selected people',
   withoutPerson: 'Without selected people'

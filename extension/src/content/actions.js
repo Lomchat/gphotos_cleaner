@@ -1,13 +1,14 @@
 /**
  * Drives selection inside Google Photos.
  *
- * The extension never deletes anything. It ticks the chosen items in Google
- * Photos and hands control back: you click "Move to bin" yourself, in Google's
- * own UI, with its own counter and confirmation.
+ * This ticks the chosen items and hands control back: you click "Move to bin"
+ * yourself, in Google's own UI, with its own counter and confirmation. It was
+ * once the only thing the extension could do; now that the API can bin items
+ * directly it is the alternative, kept for anyone who would rather see the
+ * selection in Photos before parting with it.
  *
- * That choice removes every irreversible code path at once — finding the delete
- * button, handling the confirmation dialog, batching, verifying a counter
- * before destroying. What remains is one action undone by a single click.
+ * Nothing here is irreversible — the worst outcome is a tick in the wrong box,
+ * undone by clicking it again.
  *
  * Speed comes from not doing work that was never needed. The first version
  * scrolled every tile to the centre of the screen and then slept a fixed 90 ms,
@@ -17,7 +18,7 @@
  */
 
 import * as dom from './dom-adapter.js';
-import { bringIntoView, sleep, findTileById, isOnScreen } from './scanner.js';
+import { bringIntoView, sleep, findTileById, isOnScreen } from './tiles.js';
 
 const DEFAULTS = {
   pollMs: 12,           // how often to look for a state change
