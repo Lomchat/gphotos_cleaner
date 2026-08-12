@@ -17,7 +17,7 @@ import {
 import { tileDateOnly } from '../src/content/dom-adapter.js';
 
 const metrics = (clientHeight = 800, scrollHeight = 40000) => ({ clientHeight, scrollHeight });
-const opts = (overrides = {}) => ({ resume: true, overlapRatio: 1, ...overrides });
+const opts = (overrides = {}) => ({ resume: true, overlapRatio: 1, repairFromTopThreshold: 200, ...overrides });
 
 test('with no cursor, restart from the top', () => {
   const r = planResume(null, metrics(), opts());
@@ -328,4 +328,34 @@ test('a grid with no tiles at all is not mistaken for starvation', () => {
   // wait is for. Only tiles-without-images means Google is not delivering.
   const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
   assert.match(source, /this\.stats\.withUrl === urlsBefore && dom\.queryTiles\(\)\.length/);
+});
+
+test('a large repair backlog restarts from the top, not from the cursor', () => {
+  // Items recorded without a thumbnail sit behind the cursor. A resumed run
+  // moves forward and never passes them, so "run again" could never clear the
+  // backlog it was advising about — it grew instead.
+  const r = planResume(
+    { scrollTop: 40000, reachedEnd: false },
+    metrics(800, 200000),
+    opts({ pendingRepairs: 1807, repairFromTopThreshold: 200 })
+  );
+  assert.equal(r.startTop, 0);
+  assert.equal(r.reason, 'top-repair');
+});
+
+test('a handful of repairs does not throw away the resume position', () => {
+  // Restarting from the top for a dozen items would re-walk the whole library
+  // to save a dozen — the cure has to be proportionate.
+  const r = planResume(
+    { scrollTop: 40000, reachedEnd: false },
+    metrics(800, 200000),
+    opts({ pendingRepairs: 5, repairFromTopThreshold: 200 })
+  );
+  assert.equal(r.reason, 'resume');
+  assert.ok(r.startTop > 0);
+});
+
+test('the backlog rule respects resume being switched off', () => {
+  const r = planResume(null, metrics(), opts({ resume: false, pendingRepairs: 9999 }));
+  assert.equal(r.reason, 'top-disabled');
 });

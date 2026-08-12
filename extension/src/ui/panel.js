@@ -1095,7 +1095,7 @@ export class Panel {
           ? [el('b', {}, `${nf(reprenables)} will be retried automatically`),
              ' at the end of the next run: each is brought back on screen, its image awaited, then analysed.']
           : [el('b', {}, `${nf(reprenables)} to recover`),
-             ' — run again, a fresh pass picks them up.']));
+             ' — the next run starts from the top to collect them.']));
     }
 
     if (abandonnes > 0) {
@@ -1265,6 +1265,16 @@ export class Panel {
         'Resume off: always restarts from the top.');
     }
     if (!c) return null;
+
+    // Items missing a thumbnail sit behind the cursor, so a resumed pass never
+    // reaches them. Above a certain backlog the scanner ignores the cursor —
+    // say so here rather than letting the resume note contradict what happens.
+    const backlog = this.state.items.filter((i) => !i.analyzed && !i.url).length;
+    if (backlog >= 200) {
+      return el('div', { class: 'banner warn', style: 'margin:10px 0 0' },
+        el('b', {}, `${nf(backlog)} item(s) still need their thumbnail. `),
+        'The next run starts from the top to collect them, rather than resuming.');
+    }
 
     if (c.reachedEnd) {
       return el('div', { class: 'banner info', style: 'margin:10px 0 0' },

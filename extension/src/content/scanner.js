@@ -47,6 +47,9 @@ const DEFAULTS = {
   // that Google is not delivering images and stopping with an explanation.
   // Grinding on produces a catalogue of items that can never be analysed.
   starvedStopsBeforeGivingUp: 6,
+  // Above this many items missing a thumbnail, restart from the top instead of
+  // resuming: they sit behind the cursor and a forward pass never reaches them.
+  repairFromTopThreshold: 200,
   thumbStallMs: 1200,    // quiet time meaning "no more images are coming"
   coverage: null,        // seam: how loaded the grid is, for tests
   thumbGiveUpRatio: 0.5, // ...but only once at least half have arrived
@@ -66,6 +69,16 @@ const DEFAULTS = {
  */
 export function planResume(cursor, metrics, opts) {
   if (!opts.resume) return { startTop: 0, reason: 'top-disabled' };
+
+  // A large backlog of items recorded without a thumbnail can only be repaired
+  // by passing them again, and they lie *behind* the cursor — a resumed run
+  // moves forward and never touches them. So a backlog this size takes
+  // priority over resuming: the pass starts from the top, re-reads them along
+  // the way, and dedup by id makes the second look cheap.
+  if ((opts.pendingRepairs || 0) >= opts.repairFromTopThreshold) {
+    return { startTop: 0, reason: 'top-repair' };
+  }
+
   if (!cursor || !Number.isFinite(cursor.scrollTop) || cursor.scrollTop <= 0) {
     return { startTop: 0, reason: 'top-no-cursor' };
   }
@@ -192,6 +205,7 @@ export class Scanner {
     // stay unanalysable forever.
     this.repairable = await getIdsMissingThumb();
     this.stats.known = this.known.size;
+    this.opts.pendingRepairs = this.repairable.size;
 
     const cursor = this.opts.resume ? await getMeta(CURSOR_KEY, null) : null;
     const plan = planResume(cursor, dom.scrollerMetrics() || { clientHeight: 0, scrollHeight: 0 }, this.opts);

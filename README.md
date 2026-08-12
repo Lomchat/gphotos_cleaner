@@ -444,6 +444,17 @@ That check fails **open**: a tile whose position cannot be measured is recorded
 rather than deferred. Deferring everything would collect nothing and look
 exactly like an empty library.
 
+### The backlog could never be repaired
+
+Items recorded without a thumbnail are marked for repair and re-read the next
+time the scan passes them. But they sit *behind* the saved position, and a
+resumed run moves forward — so "run again, a fresh pass picks them up" was
+advice the extension could not follow. The backlog only ever grew.
+
+Above 200 such items the next run now ignores the cursor and starts from the
+top, which is the only way to pass them again. Below that it resumes as before:
+re-walking a library to recover a dozen items is not a trade worth making.
+
 ### When Google serves the grid without images
 
 Sometimes none of the above is the problem. Observed on a real library: the grid
@@ -476,7 +487,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 422 tests, no external dependencies
+npm test        # 425 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
