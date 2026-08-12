@@ -323,11 +323,22 @@ test('the starvation counter resets as soon as an image arrives', () => {
   assert.match(source, /} else \{\s*\n\s*this\.stats\.starved = 0;/);
 });
 
+test('starvation is read from the page, not from what we recorded', () => {
+  // Asking whether the stop recorded anything was wrong: crossing ground
+  // already known records nothing by design, so a repair pass from the top
+  // looked starved and killed itself after six stops — a 2,000-photo run
+  // stopped at 754.
+  const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
+  assert.match(source, /cov\.total > 0 && cov\.ready === 0/);
+  assert.equal(/withUrl === urlsBefore/.test(source), false,
+    'the guard must not depend on new discoveries');
+});
+
 test('a grid with no tiles at all is not mistaken for starvation', () => {
   // No tiles means the page has not rendered yet, which is what the render
   // wait is for. Only tiles-without-images means Google is not delivering.
   const source = readFileSync(new URL('../src/content/scanner.js', import.meta.url), 'utf8');
-  assert.match(source, /this\.stats\.withUrl === urlsBefore && dom\.queryTiles\(\)\.length/);
+  assert.match(source, /cov\.total > 0 &&/);
 });
 
 test('a large repair backlog restarts from the top, not from the cursor', () => {

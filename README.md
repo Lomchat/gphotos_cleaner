@@ -58,7 +58,8 @@ Two controls bound the work, and a banner states what the next run will do:
 - **Only handle photos older than** 6 months, 12 months, 3 years, 5 years, or a
   date. The useful direction for cleaning: purge the old, never touch the recent.
 - **Limit per run** — 2,000 by default; none, 500, 10,000 or a custom number.
-- **Page size while listing** — 100% by default, i.e. the page is left alone. Google Photos renders
+- **Page size while listing** — 25% by default, Chrome's smallest: about sixteen
+  times the tiles per screen, so about a sixteenth of the stops. Google Photos renders
   exactly the tiles that fit the viewport and nothing beyond it (measured on a
   real library: zero tiles below the fold), so a smaller zoom puts more tiles on
   one screen and the scanner makes proportionally fewer stops — and a stop costs
@@ -444,6 +445,16 @@ That check fails **open**: a tile whose position cannot be measured is recorded
 rather than deferred. Deferring everything would collect nothing and look
 exactly like an empty library.
 
+### Why there is a recovery at all
+
+There should not need to be one. A stop now waits for the images it can
+actually see, with a budget that grows with how many are missing, and that is
+enough: a run over a healthy grid lists and analyses every item it finds.
+
+The recovery exists for items recorded by earlier versions, before that wait
+worked. It is a migration path, not a mechanism — once the backlog is gone it
+never runs again.
+
 ### The backlog could never be repaired
 
 Items recorded without a thumbnail are marked for repair and re-read the next
@@ -487,7 +498,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 425 tests, no external dependencies
+npm test        # 427 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

@@ -184,12 +184,13 @@ test('every step is one Chrome already has', () => {
   }
 });
 
-test('the default leaves the page alone', () => {
-  // Zooming out multiplies the images Google must deliver before a stop can be
-  // harvested. On a library where it is already slow to deliver them that makes
-  // the run worse, so the smaller steps are opt-in.
-  assert.equal(DEFAULT_FACTOR, 1);
+test('the default is a step that is actually offered', () => {
   assert.ok(ZOOM_STEPS.some((s) => s.factor === DEFAULT_FACTOR));
+});
+
+test('the default never asks for less than Chrome can give', () => {
+  assert.ok(DEFAULT_FACTOR >= MIN_FACTOR);
+  assert.ok(DEFAULT_FACTOR <= 1);
 });
 
 test('the neutral step is labelled by its size, not as an absence', () => {

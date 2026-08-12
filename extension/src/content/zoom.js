@@ -29,12 +29,15 @@ export const MIN_FACTOR = 0.25;
  * screen: 25% fits roughly sixteen times the area of 100%. Anything above 100%
  * would fit fewer, which is the opposite of the point.
  *
- * The default leaves the page alone. Zooming out multiplies the images Google
- * has to load before a stop can be harvested, and on a library where Google is
- * already slow to deliver them that makes the run worse, not faster. The
- * smaller steps are there to be chosen once a run is known to be healthy.
+ * The smallest step Chrome allows: about sixteen times the tiles per screen,
+ * so the scan makes roughly a sixteenth of the stops. Each stop costs a settle
+ * wait whatever it holds, which is what makes listing slow.
+ *
+ * This is only safe now that a stop waits for the images it can actually see,
+ * with a budget that grows with how many are missing. Before that, more tiles
+ * per screen simply meant more of them harvested before their image arrived.
  */
-export const DEFAULT_FACTOR = 1;
+export const DEFAULT_FACTOR = 0.25;
 
 // Chrome's own preset steps, so the browser applies exactly what was asked for
 // rather than snapping to a neighbour.

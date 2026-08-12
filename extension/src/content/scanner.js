@@ -238,15 +238,16 @@ export class Scanner {
           await this.waitForThumbs();
         }
 
-        const urlsBefore = this.stats.withUrl;
         await this.harvest(scroller.scrollTop);
         this.stats.rounds++;
 
-        // A stop that rendered tiles but produced no usable thumbnail means
-        // Google is serving the grid without images. That is not something to
-        // scroll through: every further stop records items that can never be
-        // analysed, and the run ends looking like a failure of this extension.
-        if (this.stats.withUrl === urlsBefore && dom.queryTiles().length) {
+        // Starvation is a property of the page, not of our bookkeeping: tiles
+        // rendered, none of them carrying an image. Asking instead whether this
+        // stop *recorded* anything was wrong — crossing ground already known
+        // records nothing by design, so a repair pass from the top looked like
+        // starvation and killed itself after six stops.
+        const cov = (this.opts.coverage || dom.thumbCoverage)();
+        if (cov.total > 0 && cov.ready === 0) {
           if (++this.stats.starved >= this.opts.starvedStopsBeforeGivingUp) {
             starved = true;
             break;
