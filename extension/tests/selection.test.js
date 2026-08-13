@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { Panel } from '../src/ui/panel.js';
+import { PANEL_CSS } from '../src/ui/styles.js';
 
 /** A Panel stand-in with just the state the selection methods touch. */
 function panel(ids, selected = []) {
@@ -401,4 +402,61 @@ test('the viewer tick follows the selection while it is open', () => {
   p.paintActions();
   assert.match(button.textContent, /Ticked/);
   assert.match(button.className, /primary/);
+});
+
+/* ------------------------------------------------- what covers what, on a tile */
+
+/**
+ * Four things are written over a thumbnail: the tick mark, the view button,
+ * the criterion tags and the facts. Absolute positioning gives no warning when
+ * two of them land in the same place — the later one simply wins, and the
+ * earlier one stops working. It happened twice in one change: the view button
+ * was put on the tick mark, and the facts bar over the tags bar.
+ */
+const CSS = PANEL_CSS;
+
+/** The declarations of one rule, as written. */
+function rule(selector) {
+  const at = CSS.indexOf(`${selector} {`);
+  assert.notEqual(at, -1, `${selector} is not in the stylesheet`);
+  return CSS.slice(at, CSS.indexOf('}', at));
+}
+
+test('the view button is not on top of the tick mark', () => {
+  // The mark is the control the whole grid is built around. A 22px button over
+  // a 17px checkbox means every click meant for it opens the picture instead.
+  const mark = rule('.thumb .mark');
+  const zoom = rule('.thumb .zoom');
+  assert.match(mark, /left:\s*4px/);
+  assert.match(zoom, /right:\s*4px/, 'the button belongs in the opposite corner');
+  assert.equal(/left:\s*4px/.test(zoom), false);
+});
+
+test('a hidden view button does not swallow clicks', () => {
+  // opacity: 0 still receives them, which is how it took the tick's clicks
+  // even on tiles nobody was hovering.
+  assert.match(rule('.thumb .zoom'), /pointer-events:\s*none/);
+  assert.match(CSS, /\.thumb:hover \.zoom[^{]*\{[^}]*pointer-events:\s*auto/);
+});
+
+test('the bar over the bottom of a tile is one bar', () => {
+  // Two overlays anchored to bottom:0 stack, and the later one wins.
+  assert.match(rule('.thumb .overlay'), /bottom:\s*0/);
+  const tags = rule('.thumb .tags');
+  const facts = rule('.thumb .facts');
+  for (const [name, body] of [['tags', tags], ['facts', facts]]) {
+    assert.equal(/position:\s*absolute/.test(body), false,
+      `.thumb .${name} must sit inside the bar, not float over the tile`);
+  }
+});
+
+test('the bar does not take clicks away from the tile', () => {
+  // It is a label. Ticking has to work everywhere on a thumbnail, including
+  // the strip where the date is written.
+  assert.match(rule('.thumb .overlay'), /pointer-events:\s*none/);
+});
+
+test('nothing else claims the corner the bar occupies', () => {
+  // The video badge sat at bottom-right, under the facts.
+  assert.match(rule('.thumb.video::after'), /display:\s*none/);
 });

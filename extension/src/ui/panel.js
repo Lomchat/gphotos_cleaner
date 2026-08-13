@@ -723,40 +723,46 @@ export class Panel {
       },
       item.url ? el('img', { src: item.url, loading: 'lazy', referrerPolicy: 'no-referrer' }) : null,
       el('span', { class: 'mark', text: on ? '✓' : '' }),
-      // Show the presence score on tiles caught as "no people": it is the
-      // least reliable criterion, and seeing it lets you judge on evidence.
-      (item.matched || []).includes('noFace') && item.features
-        ? el('span', {
-            class: 'score',
-            title: item.features.faceMethod === 'heuristic'
-              ? 'Presence score / skin area (heuristic)'
-              : `Best detection confidence (${item.features.faceMethod})`
-          },
-            item.features.faceMethod === 'heuristic'
-              ? `${Math.round(item.features.faceScore * 100)}/${Math.round((item.features.skinFrac || 0) * 100)}%`
-              : `${Math.round(item.features.faceScore * 100)}%`)
-        : null,
-      el('span', { class: 'tags' },
-        (item.matched || []).slice(0, 3).map((m) => el('span', { text: CRITERION_LABELS[m] || m }))),
-
-      // The two facts a delete decision actually rests on, on the tile rather
-      // than in a tooltip nobody hovers: when it was taken, and what it costs.
-      // Size is only there once the metadata pass has run, and is left out
-      // rather than shown as zero.
-      el('span', { class: 'facts' },
-        el('b', {}, item.ts == null ? 'no date' : formatDate(item.ts, item.precision || 'day')),
-        itemBytes(item) ? el('span', {}, formatBytes(itemBytes(item))) : null,
-        item.isVideo && item.duration ? el('span', {}, dur(item.duration)) : null),
 
       // Opens the full-size view. Its own button rather than a double-click:
       // every click in this grid ticks something, and a gesture that sometimes
       // ticks and sometimes opens is the one nobody trusts.
+      //
+      // Top-right, opposite the tick mark. It began on top-left, over that
+      // mark, so a click aimed at the checkbox opened the picture instead.
       el('button', {
         class: 'zoom',
         text: item.isVideo ? '▶' : '⤢',
         title: item.isVideo ? 'Play this video' : 'View full size',
         onclick: (ev) => { ev.stopPropagation(); this.openViewer(item); }
-      })
+      }),
+
+      // One bar along the bottom, for everything written over the photo.
+      // These were two overlays both anchored to the same edge, so whichever
+      // was appended second covered the other.
+      el('span', { class: 'overlay' },
+        el('span', { class: 'tags' },
+          (item.matched || []).slice(0, 3).map((m) => el('span', { text: CRITERION_LABELS[m] || m }))),
+        // The two facts a delete decision actually rests on: when it was taken
+        // and what it costs. Size is only there once the metadata pass has
+        // run, and is left out rather than shown as zero.
+        el('span', { class: 'facts' },
+          el('b', {}, item.ts == null ? 'no date' : formatDate(item.ts, item.precision || 'day')),
+          itemBytes(item) ? el('span', {}, formatBytes(itemBytes(item))) : null,
+          item.isVideo && item.duration ? el('span', {}, dur(item.duration)) : null,
+          // The presence score, on tiles caught as "no people": it is the
+          // least reliable criterion, and seeing it lets you judge on evidence.
+          (item.matched || []).includes('noFace') && item.features
+            ? el('span', {
+                class: 'score',
+                title: item.features.faceMethod === 'heuristic'
+                  ? 'Presence score / skin area (heuristic)'
+                  : `Best detection confidence (${item.features.faceMethod})`
+              },
+                item.features.faceMethod === 'heuristic'
+                  ? `${Math.round(item.features.faceScore * 100)}/${Math.round((item.features.skinFrac || 0) * 100)}%`
+                  : `${Math.round(item.features.faceScore * 100)}%`)
+            : null))
     );
   }
 

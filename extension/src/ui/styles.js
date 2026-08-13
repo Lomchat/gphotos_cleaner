@@ -540,23 +540,39 @@ select:focus-visible, input:focus-visible, button:focus-visible {
   transition: background .15s, border-color .15s;
 }
 .thumb.on .mark { background: var(--amber); border-color: var(--amber); color: var(--ink); font-weight: 700; }
-.thumb .tags {
+/* Everything written over the bottom of a tile shares one bar and one
+   gradient. Two absolutely-positioned overlays both anchored to bottom:0 sat
+   on top of each other, and whichever came second won. */
+.thumb .overlay {
   position: absolute; left: 0; right: 0; bottom: 0;
-  padding: 14px 4px 4px;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 16px 4px 4px;
   background: linear-gradient(transparent, rgba(0,0,0,.85));
   font: 500 9px/1.3 var(--body); color: #fff;
-  display: flex; flex-wrap: wrap; gap: 2px;
+  /* The bar is a label, not a target: clicks belong to the tile under it. */
+  pointer-events: none;
 }
+.thumb .tags { display: flex; flex-wrap: wrap; gap: 2px; }
 .thumb .tags span { background: rgba(255,255,255,.18); border-radius: 3px; padding: 1px 4px; }
-.thumb .score {
-  position: absolute; top: 4px; right: 4px;
-  padding: 1px 5px; border-radius: 5px;
-  background: rgba(0,0,0,.65); color: #fff;
-  font: 600 9px/1.4 var(--mono);
-  font-variant-numeric: tabular-nums;
+.thumb .facts {
+  display: flex; gap: 6px; align-items: baseline;
+  font-size: 9.5px; text-shadow: 0 1px 2px rgba(0,0,0,.9);
 }
+.thumb .facts b { font-weight: 700; }
+.thumb .facts span { opacity: .85; }
+.thumb .facts .score {
+  margin-left: auto;
+  padding: 0 4px; border-radius: 4px;
+  background: rgba(255,255,255,.2);
+  font: 600 9px/1.5 var(--mono);
+  font-variant-numeric: tabular-nums;
+  opacity: 1;
+}
+/* Videos are marked by their duration in the bar and by the play glyph on the
+   view button, so the corner badge would be a third statement of the same
+   thing — in the corner the bar now occupies. */
 .thumb.video::after {
-  content: "▶"; position: absolute; right: 5px; bottom: 5px;
+  content: ""; display: none; position: absolute; right: 5px; bottom: 5px;
   font-size: 9px; color: #fff; text-shadow: 0 1px 4px #000;
 }
 
@@ -785,36 +801,16 @@ footer .buttons button { flex: 1; }
 .group-block > header .action { padding: 3px 9px; font-size: 11px; }
 .group-block .grid { margin-top: 8px; }
 
-/* ------------------------------------------------- facts on a thumbnail */
+/* ------------------------------------------------------- the view button */
 
-/* The date and what it costs, on the tile rather than in a tooltip nobody
-   hovers — these are what a delete decision actually rests on. Bottom-left,
-   so the tick mark and the criterion tags keep their corners. */
-.thumb .facts {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  gap: 6px;
-  align-items: baseline;
-  padding: 12px 5px 4px;
-  font: 500 9.5px/1.25 inherit;
-  color: #fff;
-  background: linear-gradient(transparent, rgba(0,0,0,.72));
-  pointer-events: none;
-  text-shadow: 0 1px 2px rgba(0,0,0,.9);
-}
-.thumb .facts b { font-weight: 700; }
-.thumb .facts span { opacity: .85; }
-
-/* Opening the full size is its own button: every other click in this grid
-   ticks something. Hidden until the tile is hovered so it does not compete
-   with the photograph. */
+/* Top-RIGHT. It started on top-left, exactly where the tick mark is: a 22px
+   button covering the 17px control the whole grid is built around, so a click
+   meant for the checkbox opened the picture instead. Opacity 0 still takes
+   clicks, so it was swallowing them even before the tile was hovered. */
 .thumb .zoom {
   position: absolute;
   top: 4px;
-  left: 4px;
+  right: 4px;
   width: 22px;
   height: 22px;
   padding: 0;
@@ -825,10 +821,14 @@ footer .buttons button { flex: 1; }
   font-size: 11px;
   line-height: 22px;
   cursor: pointer;
-  opacity: 0;
   transition: opacity .12s, background .12s;
+  /* Hidden until wanted, and unclickable while hidden: opacity alone still
+     takes clicks, which is how it swallowed the tick's. One rule, so the two
+     properties cannot drift apart. */
+  opacity: 0;
+  pointer-events: none;
 }
-.thumb:hover .zoom, .thumb .zoom:focus-visible { opacity: 1; }
+.thumb:hover .zoom, .thumb .zoom:focus-visible { opacity: 1; pointer-events: auto; }
 .thumb .zoom:hover { background: rgba(0,0,0,.85); }
 
 /* --------------------------------------------------------- the full view */

@@ -137,7 +137,8 @@ render limit is a display budget, and a button that quietly meant "the first
 three hundred" would be the worst kind of wrong here.
 
 Each tile carries the two facts a delete decision rests on — when it was taken
-and what it costs — and a button that opens it full size. Videos play: the same
+and what it costs — in one bar along the bottom, with a view button in the
+corner opposite the tick. Videos play: the same
 base URL serves a 1600px still and, with `=m18`, the MP4 Google gives its own
 player.
 
@@ -617,7 +618,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 602 tests, no external dependencies
+npm test        # 607 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
