@@ -412,6 +412,39 @@ Settings that matter (*Settings → Speed*):
 | **Thumbnail size** (176px) | Dominant transfer cost. Tests verify hashes stay comparable at this scale and the sharp/blurry ordering is preserved; face detection was measured to hold up too. |
 | **Concurrent batches** (3) | The main lever on a fast connection. |
 
+### The link is latency, not bandwidth
+
+Measured against a live library, which is the only place this can be measured
+honestly — a thumbnail served from disk tells you nothing about the thing that
+actually costs:
+
+| | 176px | 512px |
+|---|---|---|
+| one at a time | 122 ms each | 232 ms each |
+| 8 in flight | 17.6 ms | 20.0 ms |
+| **16 in flight** | **13.0 ms** | **12.9 ms** |
+| 32 in flight | 13.3 ms | 11.9 ms |
+
+Two things follow, and both were being got wrong.
+
+**Image size barely matters; outstanding requests are everything.** At sixteen
+in flight a 512px rendition costs the same as a 176px one. There is no point
+shrinking what is fetched — only in fetching more of it at once. Throughput
+flattens at around sixteen concurrent fetches, so that is the ceiling to aim
+at.
+
+**A worker that is waiting is not fetching.** After measuring a thumbnail a
+worker waits on the detection pool, and with sixteen workers queueing onto five
+detectors that wait is roughly a quarter of its cycle — so sixteen workers keep
+about twelve fetches outstanding, not sixteen. The pool is sized above the
+ceiling rather than at it.
+
+The face pass was the worse offender: it sent one batch of twelve and waited
+for it, so twelve photos were ever moving while the analysis beside it kept
+seventy-two — and every batch was paced by its slowest photo. It now pipelines
+batches like the analysis does, and each photo fans its own faces across the
+recognition pool instead of embedding them one after another.
+
 ### Where the analysis time goes
 
 Every run reports its own split, because guessing here has been wrong twice and
@@ -531,7 +564,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 538 tests, no external dependencies
+npm test        # 547 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

@@ -18,6 +18,22 @@ import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 const BATCH_SIZE = 12;
 
 /**
+ * Batches in flight at once.
+ *
+ * The pass used to send one batch and wait for it, so at most twelve photos
+ * were ever moving while the analysis beside it kept seventy-two. Measured on a
+ * live library: one thumbnail takes ~122ms sequentially and ~13ms at
+ * concurrency 16 — the link is almost all latency, so the only thing that
+ * matters is how many requests are outstanding. Waiting for a whole batch
+ * before starting the next also means every batch is paced by its slowest
+ * photo, and a batch is twelve photos re-fetched at 512px.
+ *
+ * Three is enough to keep the network saturated past that ceiling; more only
+ * lengthens the queue inside the offscreen document.
+ */
+const INFLIGHT_BATCHES = 3;
+
+/**
  * Photos worth re-fetching at full rendition.
  *
  * Only those the local analysis already believes contain a face. Sending the
@@ -46,49 +62,73 @@ export function pending(items, options) {
  * far, and the pass is minutes long.
  */
 export async function scanFaces(items, {
-  onProgress, signal, send, save = db.saveFaces
+  onProgress, signal, send, save = db.saveFaces, inflight = INFLIGHT_BATCHES
 } = {}) {
   const totals = { scanned: 0, faces: 0, failed: 0, tooSmall: 0, errors: [] };
 
+  const batches = [];
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
-    if (signal?.aborted) break;
-    const slice = items.slice(i, i + BATCH_SIZE);
-
-    let reply;
-    try {
-      reply = await send({
-        type: 'PEOPLE_BATCH',
-        // Enlarged here, not in the catalogue: the stored URL stays the 176px
-        // one the grid displays, and only this pass pays for more pixels.
-        items: slice.map((it) => ({ id: it.id, url: withThumbSize(it.url, PEOPLE_RENDER_PX) }))
-      });
-    } catch (err) {
-      totals.errors.push(String(err?.message || err));
-      continue;
-    }
-
-    if (!reply?.ok) {
-      totals.errors.push(reply?.error || 'no reply from the analysis engine');
-      // A missing model or a blocked runtime will not fix itself next batch.
-      break;
-    }
-
-    const good = reply.results.filter((r) => r.ok);
-    const bad = reply.results.filter((r) => !r.ok);
-    totals.scanned += good.length;
-    totals.failed += bad.length;
-    totals.faces += good.reduce((n, r) => n + r.faces.length, 0);
-    totals.tooSmall += good.reduce((n, r) => n + (r.skipped || 0), 0);
-    if (bad.length && totals.errors.length < 3) totals.errors.push(bad[0].error);
-
-    await save(good, good.map((r) => r.id));
-    onProgress?.({
-      done: Math.min(i + BATCH_SIZE, items.length),
-      total: items.length,
-      faces: totals.faces
-    });
+    batches.push(items.slice(i, i + BATCH_SIZE));
   }
 
+  // `next` is shared between runners: execution is single-threaded, so `next++`
+  // is indivisible and acts as the queue. Same shape as `analyze-client`.
+  let next = 0;
+  let done = 0;
+  let engineGone = false;
+
+  const runner = async () => {
+    while (!engineGone && !signal?.aborted) {
+      const index = next++;
+      if (index >= batches.length) return;
+      const slice = batches[index];
+
+      let reply;
+      try {
+        reply = await send({
+          type: 'PEOPLE_BATCH',
+          // Enlarged here, not in the catalogue: the stored URL stays the 176px
+          // one the grid displays, and only this pass pays for more pixels.
+          items: slice.map((it) => ({ id: it.id, url: withThumbSize(it.url, PEOPLE_RENDER_PX) }))
+        });
+      } catch (err) {
+        // One bad round trip is not the engine giving up: keep going, so a
+        // transient failure costs twelve photos rather than the whole pass.
+        totals.errors.push(String(err?.message || err));
+        done += slice.length;
+        onProgress?.({ done, total: items.length, faces: totals.faces });
+        continue;
+      }
+
+      if (!reply?.ok) {
+        // A missing model or a blocked runtime will not fix itself next batch.
+        // The runners already in flight finish what they hold; none starts
+        // anything new.
+        totals.errors.push(reply?.error || 'no reply from the analysis engine');
+        engineGone = true;
+        return;
+      }
+
+      const good = reply.results.filter((r) => r.ok);
+      const bad = reply.results.filter((r) => !r.ok);
+      totals.scanned += good.length;
+      totals.failed += bad.length;
+      totals.faces += good.reduce((n, r) => n + r.faces.length, 0);
+      totals.tooSmall += good.reduce((n, r) => n + (r.skipped || 0), 0);
+      if (bad.length && totals.errors.length < 3) totals.errors.push(bad[0].error);
+
+      await save(good, good.map((r) => r.id));
+      // Counted as batches complete rather than from the index: with several
+      // in flight the indices arrive out of order, and a progress figure that
+      // goes backwards is worse than a coarse one.
+      done += slice.length;
+      onProgress?.({ done, total: items.length, faces: totals.faces });
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(inflight, batches.length)) }, runner)
+  );
   return totals;
 }
 

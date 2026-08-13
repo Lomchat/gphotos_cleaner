@@ -9,6 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { Panel } from '../src/ui/panel.js';
 
@@ -106,4 +107,61 @@ test('the download is announced in the run log', async () => {
   await p.runPeopleScan({ inline: true, log: {} });
   assert.ok(p.logged.some((m) => /13 MB/.test(m)),
     'a silent 13 MB download during someone else\'s run is not acceptable');
+});
+
+/* ----------------------------------------------------------- concurrency */
+
+/**
+ * Where the face pass spends its time.
+ *
+ * Measured against a live library: one thumbnail takes ~122ms fetched on its
+ * own and ~13ms with sixteen outstanding, at 176px and at 512px alike. The link
+ * is almost entirely latency, so the only thing that decides throughput is how
+ * many requests are in flight — not the size of the image, and not the CPU.
+ *
+ * The pass therefore has to keep several batches moving, and each photo has to
+ * keep several recognitions moving. Both were serial.
+ */
+
+test('a photo embeds its faces together, not one after another', () => {
+  const source = readFileSync(new URL('../src/analysis/people-runner.js', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('export async function analysePhoto'));
+  assert.match(body, /Promise\.all\(\s*usable\.map/,
+    'a group photo of seven was seven sequential round trips to the pool');
+  assert.equal(/for \(const face of boxes\)[\s\S]{0,200}await embed\(/.test(body), false,
+    'the sequential loop must not come back');
+});
+
+test('a photo is reported unread rather than half read when the pool dies', () => {
+  // A missing vector means the recogniser is gone, not that one face is odd.
+  // Keeping the others would store a photo whose faces are silently incomplete.
+  const source = readFileSync(new URL('../src/analysis/people-runner.js', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('export async function analysePhoto'));
+  assert.match(body, /vectors\.some\(\(v\) => !v\)/);
+  assert.match(body, /recognition unavailable/);
+});
+
+test('the pass runs several batches at once', () => {
+  const source = readFileSync(new URL('../src/content/people-client.js', import.meta.url), 'utf8');
+  assert.match(source, /INFLIGHT_BATCHES = \d/);
+  assert.match(source, /Promise\.all\(\s*Array\.from\(\{ length: Math\.max\(1, Math\.min\(inflight/,
+    'batches must be pipelined, not awaited one at a time');
+});
+
+test('the panel drives both stages from the same setting', () => {
+  // They are bound by the same link. Two separate numbers would invite tuning
+  // one and wondering why the other did not move.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const start = source.indexOf('const totals = await scanFaces(');
+  assert.match(source.slice(start, start + 500), /inflight: this\.state\.settings\.analyzeInflight/);
+});
+
+test('the fetch pool is sized above the fetch ceiling, not at it', () => {
+  // Workers block on the detection pool after measuring, so a pool sized at the
+  // ceiling keeps fewer fetches outstanding than the ceiling allows.
+  const source = readFileSync(new URL('../src/offscreen/offscreen.js', import.meta.url), 'utf8');
+  const m = /const POOL_SIZE = Math\.max\((\d+), Math\.min\((\d+),/.exec(source);
+  assert.ok(m, 'the pool size must stay a bounded expression');
+  assert.ok(Number(m[2]) > 16, `cap is ${m[2]}, at or below the measured fetch ceiling`);
+  assert.ok(Number(m[1]) >= 12, `floor is ${m[1]}: a modest machine is still latency-bound`);
 });

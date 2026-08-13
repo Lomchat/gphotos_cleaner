@@ -115,19 +115,35 @@ export async function analysePhoto(item) {
     // strongest face alongside the full list, and reading the wrong key would
     // silently find nobody in a library full of people.
     const boxes = summary.boxes || [];
-    const faces = [];
     let skipped = 0;
-
+    const usable = [];
     for (const face of boxes) {
       if (faceWidthPx(face.box, bitmap.width) < MIN_FACE_PX) { skipped++; continue; }
-      const vector = await embed(facePatch(bitmap, face.box));
-      if (!vector) return { id: item.id, ok: false, error: 'recognition unavailable' };
+      usable.push(face);
+    }
+
+    // Fanned out across the recognition pool rather than awaited one at a
+    // time. A group photo of seven was seven sequential round trips, holding
+    // its slot in the pass open while four of the five recognisers sat idle —
+    // and the batch it belongs to is paced by its slowest photo.
+    const vectors = await Promise.all(
+      usable.map((face) => embed(facePatch(bitmap, face.box)))
+    );
+    // One failure means the pool is gone, not that one face is odd, so the
+    // photo is reported unread rather than half read.
+    if (vectors.some((v) => !v)) {
+      return { id: item.id, ok: false, error: 'recognition unavailable' };
+    }
+
+    const faces = usable.map((face, i) => ({
+      box: face.box,
+      score: face.score,
       // Plain array, not the Float32Array: the reply travels over
       // chrome.runtime messaging, which serialises to JSON rather than
       // structured-cloning. A typed array arrives there as {"0": .., "1": ..},
       // with no length — and every distance computed from it comes out as 1.
-      faces.push({ box: face.box, score: face.score, vector: Array.from(vector) });
-    }
+      vector: Array.from(vectors[i])
+    }));
 
     return { id: item.id, ok: true, faces, skipped, width: bitmap.width, height: bitmap.height };
   } catch (err) {

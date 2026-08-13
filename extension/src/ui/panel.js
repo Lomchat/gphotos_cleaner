@@ -2312,6 +2312,8 @@ export class Panel {
       // Without this the pass ignored Stop entirely — and it is the longest
       // stage of a run, so it was the one people actually wanted to stop.
       signal: this.runAbort?.signal,
+      // The same lever as the analysis: this pass is bound by the same link.
+      inflight: this.state.settings.analyzeInflight,
       send: (m) => this.send(m),
       save: (results, ids) => this.saveFaces(results, ids),
       onProgress: ({ done, total, faces }) => {
@@ -2571,7 +2573,7 @@ export class Panel {
           num('thumbSize', 'Thumbnail size', 96, 512, 16,
             'The dominant cost is transfer. 176px is enough — hashes and the sharp/blurry ordering are stable there. Beyond that you pay bytes without gaining discernment.'),
           num('analyzeInflight', 'Concurrent batches', 1, 8, 1,
-            'Analysis requests run in parallel. Raise it on a fast connection; lower it to ease a modest machine.'))),
+            'How many batches are in flight at once, for the analysis and the face pass alike. Both are bound by the link to Google, which is almost all latency: measured, one thumbnail takes 122ms on its own and 13ms with sixteen outstanding. Raise it on a fast connection; lower it to ease a modest machine.'))),
 
       el('section', {}, el('h2', {}, 'Local data'),
         el('div', { class: 'card' },
