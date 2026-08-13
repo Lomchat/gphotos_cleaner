@@ -20,10 +20,10 @@ import {
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
-  SORTS, SORT_KEYS, groupSizeMap, itemBytes
+  SORTS, SORT_KEYS, groupSizeMap, itemBytes, sectionsByPerson
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
-import { groupLabel, DEFAULT_EPS } from '../analysis/cluster.js';
+import { groupLabel, SHIPPED_EPS } from '../analysis/cluster.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 import {
   candidates as peopleCandidates, pending as pendingPeople,
@@ -54,7 +54,7 @@ const DEFAULT_SETTINGS = {
   // it is the reason to delete anything at all.
   scanSizes: true,
   lastAnalysisSplit: null, // where the per-photo work actually goes
-  peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
+  peopleEps: SHIPPED_EPS // how alike two faces must be to count as one person
 };
 
 /**
@@ -279,6 +279,9 @@ export class Panel {
       browsing: true,
       modalOpen: false,
       dupStale: false,
+      // Set only under the "rarest people" order: the grid split into one
+      // block per person. Null everywhere else.
+      sections: null,
       faceModel: null,
       cursor: null,
       // The pending "are you sure" for a move to the bin. Null unless the user
@@ -525,6 +528,7 @@ export class Panel {
       // Forget the nodes that just went away: a repaint into a detached footer
       // is invisible, and would hide the fact that it never ran.
       this.modalTicked = null;
+      this.sectionButtons = null;
       this.modalTickButton = null;
       this.modalBinButton = null;
       return;
@@ -560,6 +564,8 @@ export class Panel {
         Object.values(this.state.filters.enabled).some(Boolean)
           ? 'Nothing matches the active criteria.'
           : 'Nothing here yet — analyse your library first.'));
+    } else if (this.state.sections) {
+      put(main, this.buildPersonSections(shown));
     } else {
       const grid = el('div', { class: 'grid' });
       shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
@@ -615,6 +621,85 @@ export class Panel {
     // Filled in place, and repainted on every tick: ticking a thumbnail must
     // not rebuild the grid it was ticked in.
     this.paintActions();
+  }
+
+  /**
+   * The grid, split into one block per person.
+   *
+   * Each block can be ticked whole, which is the action the "rarest people"
+   * order exists to enable: a face that appears four times in twenty years is
+   * a decision about a person, not about four photographs.
+   *
+   * Only the photos actually on screen are drawn — the render limit applies
+   * across the whole list — so a block's header says how many of its photos
+   * are showing when that is fewer than it holds.
+   */
+  buildPersonSections(shown) {
+    const out = [];
+    // Held so their labels can follow the selection without rebuilding the
+    // grid they sit above.
+    this.sectionButtons = [];
+    let start = 0;
+
+    for (const section of this.state.sections) {
+      const offset = start;
+      start += section.items.length;
+
+      // Tiles are addressed by their index into the flat list, and the render
+      // limit cuts that list — so a block can be partly or entirely off screen.
+      const count = Math.max(0, Math.min(section.items.length, shown.length - offset));
+      if (!count) continue;
+
+      const ids = section.items.map((i) => i.id);
+      const label = section.id === null ? 'Nobody recognised' : groupLabel(section);
+      // The label is filled by paintActions, which also keeps it honest as
+      // individual photos are ticked underneath it. The handler reads the
+      // selection when it fires rather than when it was built, for the same
+      // reason.
+      const button = el('button', {
+        class: 'action',
+        onclick: () => this.toggleSection(ids, !ids.every((id) => this.state.selection.has(id)))
+      });
+      this.sectionButtons.push({ ids, button });
+
+      out.push(el('section', { class: 'person-block' },
+        el('header', {},
+          el('h3', {}, label),
+          el('span', { class: 'muted tiny' },
+            (section.id === null
+              ? `${nf(section.items.length)} photo(s)`
+              : `${nf(section.size)} face(s) in the library · ${nf(section.items.length)} here`)
+            + (count < section.items.length ? ` · ${nf(count)} shown` : '')),
+          el('span', { class: 'spacer' }),
+          // Every photo of the person, not merely the ones drawn: the render
+          // limit is a display budget, and a button that silently meant "the
+          // first three hundred" would be the worst kind of wrong here.
+          button),
+        put(el('div', { class: 'grid' }),
+          section.items.slice(0, count).map((item, i) => this.buildThumb(item, offset + i)))));
+    }
+    return out;
+  }
+
+  /**
+   * Tick or untick every photo of one person.
+   *
+   * Repainted rather than re-rendered, like every other selection change: the
+   * grid must not jump back to the top of a list being worked through.
+   */
+  toggleSection(ids, on) {
+    for (const id of ids) {
+      if (on) this.state.selection.add(id);
+      else this.state.selection.delete(id);
+    }
+    // The anchor belonged to a single click; after a bulk change a shift-click
+    // would extend from somewhere the user no longer has in mind.
+    this.anchorIndex = null;
+    this.rangePreview = null;
+    // Repaint only. Re-rendering to update one button label would scroll the
+    // user back to the top of the grid they were working through, which is the
+    // whole reason `paintSelection` exists.
+    this.paintSelection();
   }
 
   /** Tickable thumbnail, shared by the side preview and the modal. */
@@ -888,6 +973,21 @@ export class Panel {
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
     this.state.browsing = !!r.browsing;
+
+    // Ordering by rarest person is the only order whose point is a *person*
+    // rather than a property of one photo, so it is the only one that gets
+    // sections. The flat list is rebuilt from them, in the order they are
+    // shown, because the grid addresses tiles by their index into it — and
+    // shift-ranges cross section boundaries as a result, which is what you
+    // want when a person's photos run past the end of one.
+    this.state.sections = null;
+    if (this.state.filters.sort === 'rarePeople' && this.state.people.groups.length) {
+      const sections = sectionsByPerson(this.state.filtered, this.state.people.groups);
+      if (sections.length) {
+        this.state.sections = sections;
+        this.state.filtered = sections.flatMap((sec) => sec.items);
+      }
+    }
     // With criteria on, everything shown was chosen by a rule, so ticking it
     // all is the useful default — and any filter change resets it, because a
     // stale partial selection is a trap.
@@ -2020,6 +2120,9 @@ export class Panel {
     const s = this.state.settings;
     const busy = !!this.state.busy;
     const value = s.peopleEps;
+    // Above the measured stranger threshold. True at the shipped default, on
+    // purpose — see SHIPPED_EPS — so the note explains the trade rather than
+    // sounding an alarm about a value the extension chose itself.
     const risky = value > 0.63;
 
     const out = el('output', { text: value.toFixed(2) });
@@ -2041,19 +2144,19 @@ export class Panel {
         // setting. Pointing it here would write undefined into the threshold.
         el('button', {
           class: 'reset', text: '↺',
-          title: value === DEFAULT_EPS
+          title: value === SHIPPED_EPS
             ? 'Already at the default'
-            : `Restore the default (${DEFAULT_EPS.toFixed(2)})`,
-          disabled: busy || value === DEFAULT_EPS,
+            : `Restore the default (${SHIPPED_EPS.toFixed(2)})`,
+          disabled: busy || value === SHIPPED_EPS,
           onclick: () => {
-            s.peopleEps = DEFAULT_EPS;
+            s.peopleEps = SHIPPED_EPS;
             this.persist();
             this.rebuildGroups();
           }
         })),
       el('div', { class: risky ? 'banner warn' : 'muted tiny' },
         risky
-          ? 'Past 0.63 two different people start sharing a group — check the "mixed?" flags before acting on a filter.'
+          ? 'Loose enough that two people can share a group — the trade for not scattering one person across six. Check the "mixed?" flags before acting on a filter, or lower this.'
           : 'Lower splits one person into several groups; higher risks merging two people. Changing it regroups straight away.'));
   }
 
@@ -2089,6 +2192,10 @@ export class Panel {
     // Text into nodes that already exist, never new nodes: this runs on every
     // click in a grid of hundreds.
     if (this.modalTicked) this.modalTicked.textContent = nf(n);
+    for (const { ids, button } of this.sectionButtons || []) {
+      const all = ids.length > 0 && ids.every((id) => this.state.selection.has(id));
+      button.textContent = `${all ? 'Untick' : 'Tick'} all ${nf(ids.length)}`;
+    }
     if (this.modalTickButton) this.modalTickButton.disabled = blocked;
     if (this.modalBinButton) {
       this.modalBinButton.disabled = blocked;
@@ -2429,11 +2536,33 @@ export class Panel {
     }
   }
 
+  /**
+   * Tick or untick a person, and make that mean something on its own.
+   *
+   * Picking somebody used to change nothing visible: the two people criteria
+   * were still off, so the grid did not move and the picker looked broken. It
+   * is only ever used to answer one of those two criteria, so the first pick
+   * switches "with selected people" on.
+   *
+   * Only the first, and only when neither is already on: someone who chose
+   * *without* and then adds a second person means to add them to that filter,
+   * not to have it silently flipped to the opposite question.
+   */
   togglePerson(groupId) {
-    const ids = this.state.filters.personIds;
+    const f = this.state.filters;
+    const ids = f.personIds;
     const at = ids.indexOf(groupId);
     if (at >= 0) ids.splice(at, 1);
     else ids.push(groupId);
+
+    if (ids.length && !f.enabled.withPerson && !f.enabled.withoutPerson) {
+      f.enabled.withPerson = true;
+    } else if (!ids.length) {
+      // Neither criterion can match anything now, and a ticked box that
+      // filters nothing is the state that made these two so confusing.
+      f.enabled.withPerson = false;
+      f.enabled.withoutPerson = false;
+    }
     this.applyPersonFilters();
   }
 

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 
 import {
   clusterFaces, assignToGroups, carryNames, groupLabel, peopleByPhoto,
-  normalise, distance, toVector, DEFAULT_EPS, MERGE_RATIO
+  normalise, distance, toVector, DEFAULT_EPS, SHIPPED_EPS, MERGE_RATIO
 } from '../src/analysis/cluster.js';
 
 /* ------------------------------------------------------------- fixtures */
@@ -331,6 +331,25 @@ test('the default threshold stays inside the measured window', () => {
   // up someone else's photos.
   assert.ok(DEFAULT_EPS > 0.48, 'below this one person splits apart');
   assert.ok(DEFAULT_EPS < 0.63, 'above this two people start merging');
+});
+
+test('what the extension ships is looser than that window, deliberately', () => {
+  // The window was read off portrait sets. A real library is profiles,
+  // sunglasses and twenty years of ageing, where 0.6 scatters one person across
+  // half a dozen groups. The shipped value trades the occasional mixed group
+  // for that, which is a choice about photographs rather than about the model —
+  // so it is a separate constant, and the algorithm keeps the measured one.
+  assert.ok(SHIPPED_EPS > 0.63, 'a value inside the window would not need its own constant');
+  assert.ok(SHIPPED_EPS <= 0.75, 'and it still has to be reachable on the slider');
+});
+
+test('the shipped value is only a default, never baked into the algorithm', () => {
+  // clusterFaces must keep answering for the threshold it is given, or the
+  // slider would stop meaning anything.
+  const faces = people([12, 12], { dim: 64, seed: 5 });
+  const tight = clusterFaces(faces, { eps: 0.45 }).groups.length;
+  const loose = clusterFaces(faces, { eps: SHIPPED_EPS }).groups.length;
+  assert.ok(tight >= loose, `tight ${tight} vs loose ${loose}`);
 });
 
 test('the merge pass is not stricter than the assignment', () => {

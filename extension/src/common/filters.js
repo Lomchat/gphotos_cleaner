@@ -428,6 +428,58 @@ export function groupSizeMap(groups) {
   return new Map((groups || []).map((g) => [g.id, g.size]));
 }
 
+/**
+ * Split a list into one section per person, rarest first.
+ *
+ * The "rarest people" order already puts the least-photographed faces at the
+ * top, but a flat grid gives no way to act on a person — and acting on a person
+ * is the whole reason to look at that order: *this face appears four times in
+ * twenty years, all of them deletable*.
+ *
+ * A photo goes in exactly one section, under the **rarest** person it contains.
+ * Repeating it under each of its people would break the flat index the grid and
+ * its shift-ranges are built on, and would let "select everyone in this
+ * section" quietly reach photos of somebody you were keeping. The rarest is
+ * also the right one: a photo holding a stranger and your sister belongs with
+ * the stranger, because your sister is the reason to keep it.
+ *
+ * Photos with nobody recognised come last, in their own section — they are not
+ * a person, and mixing them in would make a "select all" mean something
+ * different at the bottom of the page than at the top.
+ */
+export function sectionsByPerson(items, groups = []) {
+  const size = new Map(groups.map((g) => [g.id, g.size]));
+  const named = new Map(groups.map((g) => [g.id, g.name || null]));
+
+  const byPerson = new Map();
+  const nobody = [];
+
+  for (const item of items) {
+    const ids = Array.isArray(item.people) ? item.people : [];
+    let rarest = null;
+    for (const id of ids) {
+      if (!size.has(id)) continue;
+      if (rarest === null || size.get(id) < size.get(rarest)) rarest = id;
+    }
+    if (rarest === null) {
+      nobody.push(item);
+      continue;
+    }
+    if (!byPerson.has(rarest)) byPerson.set(rarest, []);
+    byPerson.get(rarest).push(item);
+  }
+
+  const sections = [...byPerson.entries()]
+    .map(([id, list]) => ({ id, name: named.get(id) || null, size: size.get(id) ?? 0, items: list }))
+    // By how rare the person is, not by how many of their photos survived the
+    // filters: someone with four faces in the library is the interesting case
+    // even if only one of them matches what is on screen.
+    .sort((a, b) => a.size - b.size || a.id - b.id);
+
+  if (nobody.length) sections.push({ id: null, name: null, size: 0, items: nobody });
+  return sections;
+}
+
 /* ------------------------------------------------------------ statistics */
 
 /**

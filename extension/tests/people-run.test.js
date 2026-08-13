@@ -156,12 +156,74 @@ test('the panel drives both stages from the same setting', () => {
   assert.match(source.slice(start, start + 500), /inflight: this\.state\.settings\.analyzeInflight/);
 });
 
-test('the fetch pool is sized above the fetch ceiling, not at it', () => {
-  // Workers block on the detection pool after measuring, so a pool sized at the
-  // ceiling keeps fewer fetches outstanding than the ceiling allows.
-  const source = readFileSync(new URL('../src/offscreen/offscreen.js', import.meta.url), 'utf8');
-  const m = /const POOL_SIZE = Math\.max\((\d+), Math\.min\((\d+),/.exec(source);
-  assert.ok(m, 'the pool size must stay a bounded expression');
-  assert.ok(Number(m[2]) > 16, `cap is ${m[2]}, at or below the measured fetch ceiling`);
-  assert.ok(Number(m[1]) >= 12, `floor is ${m[1]}: a modest machine is still latency-bound`);
+/**
+ * Photos in flight is what decides throughput, and a worker is a poor unit for
+ * it: it costs a JS realm and spends nearly all its time waiting. Measured on a
+ * live library over a warm connection — 16 in flight = 92 img/s, 24 = 138,
+ * 48 = 154, 96 = 159 — so the useful target is around 48, well past any
+ * plausible worker count.
+ *
+ * An earlier reading put the ceiling at 16 and the pool was sized to it. That
+ * reading was taken on a cold connection and was simply wrong, which is the
+ * reason these numbers are pinned here rather than left in a comment.
+ */
+const OFFSCREEN = readFileSync(new URL('../src/offscreen/offscreen.js', import.meta.url), 'utf8');
+
+/** Evaluate one of the pool's sizing constants for a given core count. */
+function sizing(cores) {
+  const pick = (name) => {
+    const m = new RegExp(`const ${name} = ([^;]+);`).exec(OFFSCREEN);
+    assert.ok(m, `${name} must stay a plain bounded expression`);
+    // eslint-disable-next-line no-new-func
+    return Function('HW', `return ${m[1]};`)(cores);
+  };
+  const target = pick('TARGET_INFLIGHT');
+  const workers = pick('WORKER_COUNT');
+  const slots = Math.max(1, Math.ceil(target / workers));
+  return { target, workers, slots, capacity: workers * slots };
+}
+
+test('photos in flight are decoupled from worker threads', () => {
+  // Sized as one job per worker, reaching 48 in flight would mean 48 threads.
+  const big = sizing(20);
+  assert.ok(big.slots > 1, 'a worker must carry several photos at once');
+  assert.ok(big.workers <= 12, `${big.workers} threads is a lot for a queue depth`);
+});
+
+test('a capable machine reaches the measured plateau', () => {
+  const big = sizing(20);
+  assert.ok(big.target >= 48, `target is ${big.target}, short of the 48 that measured 154 img/s`);
+  assert.ok(big.capacity >= big.target, 'the slots must actually exist to be filled');
+});
+
+test('a modest machine still stays well above its core count', () => {
+  // The link is being kept busy, not the processor: four cores still want far
+  // more than four requests outstanding.
+  const small = sizing(4);
+  assert.ok(small.target >= 16, `target is ${small.target} on four cores`);
+  assert.ok(small.capacity >= small.target);
+});
+
+test('the target never runs away on a huge machine', () => {
+  const huge = sizing(128);
+  assert.ok(huge.target <= 48, `target is ${huge.target}: past the plateau it is only queue`);
+  assert.ok(huge.workers <= 12);
+});
+
+test('a slot is released when its photo ends, not when the worker frees up', () => {
+  // The whole point: a worker carrying four photos must free one slot per
+  // reply, and none while a detection request is outstanding.
+  assert.match(OFFSCREEN, /entry\.inflight = Math\.max\(0, entry\.inflight - 1\)/);
+  const at = OFFSCREEN.indexOf("if (msg.type === 'detect')");
+  assert.notEqual(at, -1);
+  assert.match(OFFSCREEN.slice(at - 260, at), /must NOT be released here/);
+});
+
+test('a worker that dies takes its whole load with it', () => {
+  // Decrementing one slot for a worker that is gone would leak the rest, and
+  // the pool would bleed capacity until it deadlocked.
+  const body = OFFSCREEN.slice(OFFSCREEN.indexOf('function recycle('), OFFSCREEN.indexOf('function drainQueue'));
+  assert.match(body, /crew\.findIndex/);
+  assert.match(body, /crew\.splice/);
+  assert.match(body, /inflight: 0/, 'the replacement starts empty');
 });

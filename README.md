@@ -114,6 +114,19 @@ Anything an order cannot judge — a video, an unanalysed photo, an unmeasured
 file — always sinks to the bottom rather than floating into the top, where
 people skim and tick.
 
+**Rarest people splits the grid into one block per person**, rarest first, each
+tickable whole — because that order asks a question about a *person* (this face
+appears four times in twenty years) and a flat grid gives no way to answer it. A
+photo appears once, under the rarest person in it: one holding a stranger and
+your sister belongs with the stranger, since your sister is the reason to keep
+it. **Tick all** takes every photo of that person, not the ones currently drawn.
+Photos with nobody recognised come last, in their own block.
+
+Picking somebody in the list switches **With selected people** on for you.
+Choosing a person used to change nothing visible, because both people criteria
+were still off — so the picker looked broken. Unpicking the last one switches
+them back off, since neither can match anything then.
+
 Click a thumbnail to tick it. **Shift-click** takes the whole run between it and
 your last click, and while Shift is held that run is outlined in dashed amber so
 you see what the click will take before you make it. The run adopts the anchor's
@@ -195,12 +208,20 @@ analysis already believes contain a face are re-read; a landscape has no
 identity to find.
 
 **How alike is the same person?** The threshold has a slider, because the answer
-depends on whose photos these are. The default was read off studio portraits —
-worst same-person pair 0.48, closest strangers 0.63 — and a real library of
-profiles, sunglasses and twenty years of ageing pushes same-person distances
-well past that, scattering one person across several groups. The two failures
-are not symmetrical: too strict is untidy, too loose puts two people in one
-group and offers up somebody else's photos. Past 0.63 the panel says so.
+depends on whose photos these are. The measured window was read off studio
+portraits — worst same-person pair 0.48, closest strangers 0.63.
+
+**The extension ships at 0.75, outside that window and deliberately so.** A real
+library is not a portrait set: profiles, sunglasses, bad light and twenty years
+of ageing push same-person distances well past 0.63, and at 0.6 one person
+reliably scatters across half a dozen groups. The two failures are not
+symmetrical, but neither is harmless — too strict is unusable, too loose puts
+two people in one group and offers up somebody else's photos. At 0.75 that will
+happen sometimes; the panel says so at this value, flags suspiciously wide
+groups as **mixed?**, and the slider goes back down to 0.45.
+
+The clustering module keeps 0.6 as its own default, because that is a statement
+about the model rather than about anyone's photographs.
 
 Grouping is agglomerative, not DBSCAN. DBSCAN needs the pairwise distance
 matrix, and 10,000 faces is 100 million pairs — 400 MB to hold, in a content
@@ -416,28 +437,35 @@ Settings that matter (*Settings → Speed*):
 
 Measured against a live library, which is the only place this can be measured
 honestly — a thumbnail served from disk tells you nothing about the thing that
-actually costs:
+actually costs. Per image, by how many requests are outstanding:
 
 | | 176px | 512px |
 |---|---|---|
-| one at a time | 122 ms each | 232 ms each |
+| one at a time | 122 ms | 232 ms |
 | 8 in flight | 17.6 ms | 20.0 ms |
-| **16 in flight** | **13.0 ms** | **12.9 ms** |
-| 32 in flight | 13.3 ms | 11.9 ms |
-
-Two things follow, and both were being got wrong.
+| 16 in flight | 13.0 ms | 12.9 ms |
 
 **Image size barely matters; outstanding requests are everything.** At sixteen
 in flight a 512px rendition costs the same as a 176px one. There is no point
-shrinking what is fetched — only in fetching more of it at once. Throughput
-flattens at around sixteen concurrent fetches, so that is the ceiling to aim
-at.
+shrinking what is fetched — only in fetching more of it at once.
 
-**A worker that is waiting is not fetching.** After measuring a thumbnail a
-worker waits on the detection pool, and with sixteen workers queueing onto five
-detectors that wait is roughly a quarter of its cycle — so sixteen workers keep
-about twelve fetches outstanding, not sixteen. The pool is sized above the
-ceiling rather than at it.
+That first table was taken on a cold connection, and reading a ceiling into it
+was a mistake worth recording. Warm, throughput keeps climbing well past
+sixteen:
+
+| in flight | 16 | 24 | 48 | 96 |
+|---|---|---|---|---|
+| images/s | 92 | 138 | **154** | 159 |
+
+Steep to about 48, then flat. The pool had been sized to the wrong number.
+
+**So photos in flight and worker threads are two different quantities.** A photo
+spends nearly all its life waiting — for the network, then for the detection
+pool — and a worker is a poor unit for that: it costs a JS realm to hold a
+queue slot. Each worker now carries several photos at once, which is safe
+because every message it handles is independent and its detection requests are
+keyed per call. Concurrency costs a slot rather than a thread: twelve workers
+carry forty-eight photos.
 
 The face pass was the worse offender: it sent one batch of twelve and waited
 for it, so twelve photos were ever moving while the analysis beside it kept
@@ -564,7 +592,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 547 tests, no external dependencies
+npm test        # 575 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

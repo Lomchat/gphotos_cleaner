@@ -15,31 +15,58 @@ import {
 } from '../analysis/recognize-pool.js';
 
 /*
- * Sized for the network, not the CPU: these workers spend most of their time
- * waiting on a thumbnail and only ~1.5ms on the classical measurements. Capping
- * at core count would leave the link idle. Face detection is CPU-bound and
- * lives in its own, smaller pool.
+ * Photos in flight, and the workers that carry them — two different numbers.
  *
- * Measured on a live library: one thumbnail takes ~122ms sequentially and
- * ~13ms at sixteen in flight — the link is almost all latency, and throughput
- * flattens past sixteen concurrent *fetches*. But a worker is not fetching the
- * whole time: after measuring it waits on the detection pool, and with sixteen
- * workers queueing onto five detectors that wait is a quarter of the cycle. So
- * sixteen workers keep about twelve fetches outstanding, not sixteen.
+ * A photo's life here is mostly waiting: fetch the thumbnail, decode it,
+ * measure it (~2.7ms of CPU), then wait again on the detection pool. So what
+ * decides throughput is how many photos are in flight, and a worker is a poor
+ * unit for that: it costs a JS realm and spends nearly all its time idle.
  *
- * The pool is therefore sized above the fetch ceiling rather than at it, so the
- * ones blocked on detection are covered by the ones that are not.
+ * Measured on a live library over a warm connection:
+ *
+ *   16 in flight → 92 img/s    48 in flight → 154 img/s
+ *   24 in flight → 138 img/s   96 in flight → 159 img/s
+ *
+ * Rising steeply to about 48, then flat. An earlier measurement put the
+ * ceiling at 16, which was wrong: it was taken on a cold connection, and the
+ * pool was sized to that mistake.
+ *
+ * Each worker therefore carries several jobs at once. It is safe to: every
+ * message it handles is independent, replies carry their own job id, and its
+ * detection requests are keyed per call. Concurrency now costs a queue slot
+ * rather than a thread.
  */
-const POOL_SIZE = Math.max(12, Math.min(24, (navigator.hardwareConcurrency || 4) * 2));
+const HW = navigator.hardwareConcurrency || 4;
+// Decoding and measuring are the only real CPU here, so the target scales with
+// the machine — but stays well above core count, because it is the network
+// being kept busy rather than the processor.
+const TARGET_INFLIGHT = Math.max(16, Math.min(48, HW * 3));
+const WORKER_COUNT = Math.max(4, Math.min(12, HW));
+const SLOTS_PER_WORKER = Math.max(1, Math.ceil(TARGET_INFLIGHT / WORKER_COUNT));
 const JOB_TIMEOUT_MS = 45000;
-const MAX_RESPAWNS = POOL_SIZE * 3;
+const MAX_RESPAWNS = WORKER_COUNT * 3;
 
-const idle = [];
+/** `{ worker, inflight }` — how many jobs each one is currently carrying. */
+const crew = [];
 const queue = [];
 const pending = new Map();
 let jobSeq = 0;
 let respawns = 0;
 let fatalError = null;
+
+/** The worker with the most free slots, or null when all are full. */
+function freeSlot() {
+  let best = null;
+  for (const entry of crew) {
+    if (entry.inflight >= SLOTS_PER_WORKER) continue;
+    if (!best || entry.inflight < best.inflight) best = entry;
+  }
+  return best;
+}
+
+function entryOf(worker) {
+  return crew.find((e) => e.worker === worker) || null;
+}
 
 function spawn() {
   const worker = new Worker(new URL('../analysis/worker.js', import.meta.url), { type: 'module' });
@@ -47,8 +74,8 @@ function spawn() {
   worker.onmessage = (ev) => {
     const msg = ev.data || {};
 
-    // A detection request means the worker is mid-analysis and still busy, so
-    // it must NOT go back to the idle pool here.
+    // A detection request means that photo is still in progress, so its slot
+    // must NOT be released here.
     if (msg.type === 'detect') {
       handleDetect(worker, msg);
       return;
@@ -56,7 +83,9 @@ function spawn() {
 
     const job = pending.get(msg.jobId);
     if (job) finish(job, msg);
-    idle.push(worker);
+    // Free the slot, not the worker: it may still be carrying other photos.
+    const entry = entryOf(worker);
+    if (entry) entry.inflight = Math.max(0, entry.inflight - 1);
     pump();
   };
 
@@ -84,7 +113,7 @@ function spawn() {
   return worker;
 }
 
-for (let i = 0; i < POOL_SIZE; i++) idle.push(spawn());
+for (let i = 0; i < WORKER_COUNT; i++) crew.push({ worker: spawn(), inflight: 0 });
 
 /**
  * Answer a worker's detection request.
@@ -110,14 +139,19 @@ function finish(job, result) {
   job.resolve(result);
 }
 
-/** Replace a worker considered lost, within a quota. */
+/**
+ * Replace a worker considered lost, within a quota.
+ *
+ * Everything it was carrying goes with it, so its whole slot count is released
+ * rather than decremented — the replacement starts empty.
+ */
 function recycle(worker) {
   if (!worker) return;
-  const i = idle.indexOf(worker);
-  if (i !== -1) idle.splice(i, 1);
+  const i = crew.findIndex((e) => e.worker === worker);
+  if (i !== -1) crew.splice(i, 1);
   worker.terminate();
   if (respawns++ < MAX_RESPAWNS) {
-    idle.push(spawn());
+    crew.push({ worker: spawn(), inflight: 0 });
     pump();
   }
 }
@@ -131,12 +165,14 @@ function drainQueue() {
 }
 
 function pump() {
-  while (idle.length && queue.length) {
-    const worker = idle.pop();
+  while (queue.length) {
+    const entry = freeSlot();
+    if (!entry) return;
     const job = queue.shift();
-    job.worker = worker;
+    entry.inflight++;
+    job.worker = entry.worker;
     pending.set(job.jobId, job);
-    worker.postMessage({ jobId: job.jobId, item: job.item });
+    entry.worker.postMessage({ jobId: job.jobId, item: job.item });
   }
 }
 
@@ -152,8 +188,10 @@ function submit(item) {
       if (pending.has(jobId)) {
         pending.delete(jobId);
         job.resolve({ jobId, ok: false, error: 'timed out' });
-        // A worker that stopped answering never returns to `idle`; without a
-        // replacement the pool drains job by job until it deadlocks.
+        // A worker that stopped answering never frees the slots it holds;
+        // without a replacement the pool bleeds capacity job by job until it
+        // deadlocks. `recycle` drops the whole worker, releasing all of them at
+        // once, so there is no separate decrement to do here.
         recycle(job.worker);
       } else {
         const i = queue.indexOf(job);
@@ -234,8 +272,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({
         ok: !fatalError,
         error: fatalError,
-        pool: POOL_SIZE,
-        idle: idle.length,
+        pool: TARGET_INFLIGHT,
+        workers: WORKER_COUNT,
+        idle: crew.reduce((n, e) => n + (SLOTS_PER_WORKER - e.inflight), 0),
         queued: queue.length,
         faceModel: poolStatus()
       });

@@ -35,6 +35,27 @@
 export const DEFAULT_EPS = 0.6;
 
 /**
+ * What the extension ships with, which is deliberately looser than the above.
+ *
+ * `DEFAULT_EPS` sits inside the window read off labelled photographs: same
+ * person at worst 0.48, closest strangers 0.63. That window comes from portrait
+ * sets. A real library is not a portrait set — it is profiles, sunglasses,
+ * bad light and twenty years of ageing — and at 0.6 the same person reliably
+ * scatters across half a dozen groups, which is the complaint this default
+ * answers.
+ *
+ * It is above the stranger threshold, so it *will* put two people in one group
+ * sometimes. That trade is deliberate and it is the user's to make: the panel
+ * says so at this value, flags suspiciously wide groups as "mixed?", and the
+ * slider goes back down to 0.45. Erring this way makes the library tidy and
+ * occasionally wrong; erring the other way makes it always right and unusable.
+ *
+ * The algorithm keeps the measured default, because that is a statement about
+ * the model rather than about anyone's photographs.
+ */
+export const SHIPPED_EPS = 0.75;
+
+/**
  * How the merge pass is scaled relative to `eps`.
  *
  * This was 0.8, on the reasoning that a centroid is an average and therefore

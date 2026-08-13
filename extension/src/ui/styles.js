@@ -760,6 +760,31 @@ footer .buttons button { flex: 1; }
 }
 .sortbar .sorts { margin-bottom: 4px; }
 
+/* --------------------------------------------------- one block per person */
+
+.person-block { margin: 0 0 18px; }
+.person-block > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0 6px;
+  border-bottom: 1px solid var(--line);
+  /* Sticky under the order bar, so the person a run of photos belongs to
+     stays readable while scrolling through them. */
+  position: sticky;
+  top: 46px;
+  z-index: 1;
+  background: var(--bg);
+}
+.person-block > header h3 {
+  margin: 0;
+  font: 600 12.5px/1.3 inherit;
+  letter-spacing: .01em;
+}
+.person-block > header .spacer { flex: 1; }
+.person-block > header .action { padding: 3px 9px; font-size: 11px; }
+.person-block .grid { margin-top: 8px; }
+
 /* ------------------------------------------------------------- people tab */
 
 .card-title {
