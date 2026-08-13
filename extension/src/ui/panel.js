@@ -522,6 +522,11 @@ export class Panel {
     this.modal.hidden = !this.state.modalOpen;
     if (!this.state.modalOpen) {
       this.modal.replaceChildren();
+      // Forget the nodes that just went away: a repaint into a detached footer
+      // is invisible, and would hide the fact that it never ran.
+      this.modalTicked = null;
+      this.modalTickButton = null;
+      this.modalBinButton = null;
       return;
     }
 
@@ -589,25 +594,27 @@ export class Panel {
       el('div', { class: 'layout' }, side, main),
       el('footer', {},
         el('div', { class: 'summary' },
-          el('b', {}, nf(n)), ' ticked · ',
+          (this.modalTicked = el('b', {}, '0')),
+          ' ticked · ',
           el('span', { class: 'muted' }, 'the bin keeps them 60 days')),
         put(el('div', { class: 'buttons' }),
-          el('button', {
+          (this.modalTickButton = el('button', {
             class: 'action',
             text: 'Tick in Photos',
             title: 'Tick the selection in Google Photos and leave the deleting to you',
-            disabled: !!this.state.busy || !n,
             onclick: () => { this.closeModal(); this.startSelect(); }
-          }),
-          el('button', {
+          })),
+          (this.modalBinButton = el('button', {
             class: 'action primary danger',
-            text: `Move to bin${n ? ` (${nf(n)})` : ''}`,
-            disabled: !!this.state.busy || !n,
             // Closed first: the confirmation belongs in the panel, where the
             // log of what happened is, and a full-screen grid over it would
             // hide both.
             onclick: () => { this.closeModal(); this.state.tab = 'sort'; this.confirmTrash(); }
-          }))));
+          })))));
+
+    // Filled in place, and repainted on every tick: ticking a thumbnail must
+    // not rebuild the grid it was ticked in.
+    this.paintActions();
   }
 
   /** Tickable thumbnail, shared by the side preview and the modal. */
@@ -1978,6 +1985,7 @@ export class Panel {
     const coches = nf(this.state.selection.size);
     if (this.modalCount) this.modalCount.textContent = this.countsLabel();
     if (this.footerSummary) this.footerSummary.replaceChildren(el('b', {}, coches), ' item(s) ticked');
+    this.paintActions();
   }
 
   onFilterChange() {
@@ -2064,6 +2072,30 @@ export class Panel {
    * "matching" is a claim about criteria. With none on, the grid is simply the
    * library, and calling that a match would suggest a judgement nobody made.
    */
+  /**
+   * Update whatever the size of the selection decides.
+   *
+   * The full-screen view is where ticking actually happens — that is the whole
+   * point of it — and its footer carries both actions. It was the one thing a
+   * tick did not repaint, so it sat at "0 ticked" with both buttons greyed
+   * however many photos were selected, and the only way to wake it was a
+   * filter change. Rebuilding the modal instead would throw away the scroll
+   * position of the grid being worked through.
+   */
+  paintActions() {
+    const n = this.state.selection.size;
+    const blocked = !!this.state.busy || !n;
+
+    // Text into nodes that already exist, never new nodes: this runs on every
+    // click in a grid of hundreds.
+    if (this.modalTicked) this.modalTicked.textContent = nf(n);
+    if (this.modalTickButton) this.modalTickButton.disabled = blocked;
+    if (this.modalBinButton) {
+      this.modalBinButton.disabled = blocked;
+      this.modalBinButton.textContent = `Move to bin${n ? ` (${nf(n)})` : ''}`;
+    }
+  }
+
   countsLabel() {
     const total = nf(this.state.filtered.length);
     const ticked = nf(this.state.selection.size);
@@ -2676,7 +2708,9 @@ export class Panel {
         })),
       el('div', { class: 'muted', style: 'margin-top:7px; font-size:11px' },
         'The bin keeps photos for 60 days — nothing here deletes permanently.'),
-      (this.selectLog = el('div', { class: 'log' }))
+      // Reused, not replaced: this footer is rebuilt on every tick, and a
+      // running job holds a reference to the log it is writing into.
+      (this.selectLog ||= el('div', { class: 'log' }))
     );
   }
 
