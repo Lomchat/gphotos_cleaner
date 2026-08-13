@@ -301,6 +301,11 @@ export class Panel {
     this.anchorIndex = null;
     this.rangePreview = null;
     this.shiftHeld = false;
+    // Live counters for the badge during a run, and the face pass's own
+    // numbers while it is going. Both exist so progress can be repainted
+    // without rebuilding the tab that shows it.
+    this.runCounts = null;
+    this.liveFaces = null;
   }
 
   /* ------------------------------------------------------------- montage */
@@ -909,27 +914,137 @@ export class Panel {
     this.renderModal();
   }
 
+  /**
+   * How much of the job is done — the whole job, not one stage of it.
+   *
+   * A run has two stages over the same library: measure every thumbnail, then
+   * read faces in the ones that contain a person. Counting only the first made
+   * the ring read 100% while the face pass still had thousands of photos to
+   * go, which is the one thing a completion figure must never do.
+   *
+   * So both stages count, weighted by the number of photos each actually
+   * covers. The face stage is a subset of the library, and its weight reflects
+   * that: a library with no faces in it reaches 100% on measurement alone,
+   * which is correct.
+   */
+  progressSummary() {
+    const items = this.state.items;
+    const total = items.length;
+    let analysed = 0;
+    let pending = 0;
+    for (const it of items) {
+      if (it.analyzed) analysed++;
+      else if (it.url) pending++;
+    }
+
+    // While the pass runs, its own counters are authoritative and free. Idle,
+    // they are derived from the catalogue.
+    let faceTotal = 0;
+    let faceDone = 0;
+    if (this.state.settings.scanPeople) {
+      if (this.liveFaces) {
+        faceTotal = this.liveFaces.total;
+        faceDone = this.liveFaces.done;
+      } else {
+        faceTotal = peopleCandidates(items).length;
+        faceDone = faceTotal - pendingPeople(items).length;
+      }
+    }
+
+    const done = analysed + faceDone;
+    const work = total + faceTotal;
+    return {
+      total,
+      analysed,
+      pending,
+      faceTotal,
+      faceDone,
+      facePending: Math.max(0, faceTotal - faceDone),
+      ratio: work ? done / work : 0,
+      complete: work > 0 && pending === 0 && faceDone >= faceTotal
+    };
+  }
+
+  /**
+   * Repaint progress without rebuilding anything.
+   *
+   * The face pass used to call `renderScan()` on every batch, which does
+   * `replaceChildren()` on the whole tab several times a second: the panel
+   * appeared to reload in a loop, animations restarted, and — worse — the log
+   * elements the running job was writing into were replaced by new ones, so
+   * its output silently went to detached nodes.
+   *
+   * Nothing about the tab's *contents* changes while a pass runs. Only a few
+   * numbers do, and this writes those numbers where they already are. Same
+   * reasoning as `paintSelection` for the grid.
+   */
+  paintProgress() {
+    const s = this.progressSummary();
+
+    if (this.ringFill) {
+      this.ringFill.setAttribute('stroke-dashoffset', (this.ringC * (1 - s.ratio)).toFixed(1));
+    }
+    if (this.ringValue) this.ringValue.textContent = `${Math.round(s.ratio * 100)}%`;
+    if (this.ringLabel) this.ringLabel.textContent = s.complete ? 'done' : 'analysed';
+
+    if (this.peopleBar) {
+      this.peopleBar.style.width = s.faceTotal
+        ? `${Math.round((s.faceDone / s.faceTotal) * 100)}%`
+        : '0%';
+    }
+    if (this.peopleLabel && this.liveFaces) {
+      this.peopleLabel.textContent =
+        `${nf(this.liveFaces.done)} / ${nf(this.liveFaces.total)} read · ${nf(this.liveFaces.faces)} face(s)`;
+    }
+    this.paintRunStatus(s);
+  }
+
+  /**
+   * The badge line during a run.
+   *
+   * One line for the whole run rather than one per stage, because the stages
+   * overlap and the badge is often the only thing visible: listing and
+   * analysis run together, and the face pass follows on the same button press.
+   * A badge that stopped mentioning a stage would read as that stage having
+   * failed.
+   */
+  paintRunStatus(summary = null) {
+    const c = this.runCounts;
+    if (!c) return;
+    const parts = [`Listing ${nf(c.listed)}`, `Analysing ${nf(c.analysed)}`];
+    if (c.facesTotal) parts.push(`Faces ${nf(c.facesDone)}/${nf(c.facesTotal)}`);
+    const s = summary || this.progressSummary();
+    this.setStatus({
+      label: parts.join(' · '),
+      // Quantified only once the library size is known: a denominator that
+      // still moves would make the bar go backwards, which reads as a
+      // regression rather than as progress.
+      ratio: c.listingDone ? s.ratio : null
+    });
+  }
+
   /* ------------------------------------------------------------ onglet 1 */
 
   renderScan() {
     const t = this.tabs.scan;
     t.replaceChildren();
 
-    const total = this.state.items.length;
-    const analyzed = this.state.items.filter((i) => i.analyzed).length;
-    const failed = this.state.items.filter((i) => i.analysisError).length;
-    const noThumb = this.state.items.filter((i) => !i.analyzed && !i.url).length;
+    const progress = this.progressSummary();
+    const total = progress.total;
+    const analyzed = progress.analysed;
     // Must mirror exactly what `getPending` returns: a failed item is still
     // pending (network errors are often transient), an item with no thumbnail
     // never will be. Counting otherwise shows work that does not exist, or
     // disables the button while work remains.
-    const pending = this.state.items.filter((i) => !i.analyzed && i.url).length;
+    const pending = progress.pending;
+    const failed = this.state.items.filter((i) => i.analysisError).length;
+    const noThumb = this.state.items.filter((i) => !i.analyzed && !i.url).length;
 
     put(
 
       t,
       this.buildContextBanner(),
-      this.buildHero(total, analyzed, pending),
+      this.buildHero(progress),
       this.buildModelNote(),
       el(
         'section',
@@ -1047,29 +1162,33 @@ export class Panel {
    * milestones that light up give a handle on progress — without inventing
    * anything: every number shown is a real count from the catalogue.
    */
-  buildHero(total, analyzed, pending) {
-    const ratio = total ? analyzed / total : 0;
-    const complet = total > 0 && pending === 0;
-
+  buildHero(s) {
     let titre;
     let sous;
-    if (!total) {
+    if (!s.total) {
       titre = 'Ready to explore';
-      sous = 'Run the analysis: the extension walks your library and measures every thumbnail. Nothing is modified.';
-    } else if (pending) {
-      titre = `${nf(pending)} pending`;
-      sous = `${nf(analyzed)} of ${nf(total)} thumbnails measured. Run again to carry on where you left off.`;
+      sous = 'Run the analysis: the extension lists your library and measures every thumbnail. Nothing is modified.';
+    } else if (s.pending) {
+      titre = `${nf(s.pending)} pending`;
+      sous = `${nf(s.analysed)} of ${nf(s.total)} thumbnails measured. Run again to carry on where you left off.`;
+    } else if (s.facePending) {
+      // Measurement is finished but identity is not, and saying "analysed"
+      // here would contradict the ring beside it.
+      titre = `${nf(s.facePending)} still to read`;
+      sous = `${nf(s.total)} thumbnails measured. Faces are being read in the ${nf(s.faceTotal)} photo(s) that contain one.`;
     } else {
       titre = 'Library analysed';
-      sous = `${nf(total)} items measured. Head to the Sort tab to clean up.`;
+      sous = `${nf(s.total)} items measured. Head to the Sort tab to clean up.`;
     }
 
+    this.heroTitle = el('div', { class: 'hero-title' }, titre);
+    this.heroSub = el('div', { class: 'hero-sub' }, sous);
     return el('div', { class: 'hero' },
-      this.buildRing(ratio, complet),
+      this.buildRing(s.ratio, s.complete),
       el('div', { class: 'hero-side' },
-        el('div', { class: 'hero-title' }, titre),
-        el('div', { class: 'hero-sub' }, sous),
-        this.buildMilestones(total, analyzed, complet)));
+        this.heroTitle,
+        this.heroSub,
+        this.buildMilestones(s.total, s.analysed, s.complete)));
   }
 
   /**
@@ -1096,11 +1215,16 @@ export class Panel {
       `<circle class="fill" cx="48" cy="48" r="${R}" stroke="url(#${gradId})" ` +
       `stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(C * (1 - ratio)).toFixed(1)}"/>`;
 
+    // Kept so progress can be repainted in place: rebuilding this SVG several
+    // times a second is what made the panel look like it was reloading.
+    this.ringC = C;
+    this.ringFill = svg.querySelector('.fill');
+    this.ringValue = el('div', { class: 'ring-value' }, `${Math.round(ratio * 100)}%`);
+    this.ringLabel = el('div', { class: 'ring-label' }, complet ? 'done' : 'analysed');
+
     return el('div', { class: 'ring' },
       svg,
-      el('div', { class: 'center' },
-        el('div', { class: 'ring-value' }, `${Math.round(ratio * 100)}%`),
-        el('div', { class: 'ring-label' }, complet ? 'done' : 'analysed')));
+      el('div', { class: 'center' }, this.ringValue, this.ringLabel));
   }
 
   /**
@@ -1506,10 +1630,12 @@ export class Panel {
     const p = this.state.people;
     const busy = !!this.state.busy;
 
+    // Held rather than rebuilt, so the pass can move them without touching the
+    // rest of the tab.
+    this.peopleBar = el('i', { style: `width:${pct(p.progress ? p.progress.ratio : 0)}` });
+    this.peopleLabel = el('div', { class: 'muted tiny', text: p.progress ? p.progress.label : '' });
     const bar = p.progress
-      ? el('div', {},
-          el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
-          el('div', { class: 'muted tiny', text: p.progress.label }))
+      ? el('div', {}, el('div', { class: 'progress' }, this.peopleBar), this.peopleLabel)
       : null;
 
     // Photos analysed before the switch was turned on would otherwise wait for
@@ -2127,7 +2253,15 @@ export class Panel {
     }
 
     p.error = null;
-    p.progress = { ratio: 0, label: `0 / ${nf(todo.length)}` };
+    p.progress = { ratio: 0, label: `0 / ${nf(todo.length)} read` };
+    // The face stage now counts towards the completion figure, so its size has
+    // to be known before the first repaint — otherwise the ring would jump
+    // backwards the moment the pass starts.
+    this.liveFaces = { done: 0, total: todo.length, faces: 0 };
+    if (this.runCounts) {
+      this.runCounts.facesTotal = todo.length;
+      this.runCounts.facesDone = 0;
+    }
     if (log) this.log(log, `Reading faces in ${nf(todo.length)} photo(s)…`);
     this.renderAll();
 
@@ -2135,19 +2269,30 @@ export class Panel {
       send: (m) => this.send(m),
       save: (results, ids) => this.saveFaces(results, ids),
       onProgress: ({ done, total, faces }) => {
-        p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)} · ${nf(faces)} face(s)` };
+        this.liveFaces = { done, total, faces };
+        p.progress = {
+          ratio: total ? done / total : 1,
+          label: `${nf(done)} / ${nf(total)} read · ${nf(faces)} face(s)`
+        };
+        if (this.runCounts) {
+          this.runCounts.facesDone = done;
+          this.runCounts.facesTotal = total;
+        }
         if (log) {
           log.firstElementChild?.remove();
           this.log(log, `Faces · ${nf(done)} / ${nf(total)} · ${nf(faces)} found`);
         }
-        // Progress belongs to the Analyse tab now; repaint only that.
-        this.renderScan();
+        // Repainted in place. Re-rendering the tab here rebuilt every node in
+        // it several times a second — the panel looked like it was reloading
+        // in a loop, and the log this run writes into was replaced mid-run.
+        this.paintProgress();
       }
     });
 
     if (totals.errors.length) p.error = totals.errors[0];
     if (!inline) this.state.busy = null;
     p.progress = null;
+    this.liveFaces = null;
     if (log) {
       this.log(log, `Faces done: ${nf(totals.faces)} in ${nf(totals.scanned)} photo(s)` +
         (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : ''), 'ok');
@@ -2517,7 +2662,10 @@ export class Panel {
   /* ------------------------------------------------------------------ actions */
 
   log(target, message, cls = '') {
-    if (!target) return;
+    // A node replaced by a re-render is still a perfectly good object; writing
+    // into it just puts the message nowhere anyone can see. Dropping it beats
+    // pretending the run reported something.
+    if (!target || target.isConnected === false) return;
     target.prepend(el('div', { class: cls, text: message }));
     while (target.childElementCount > 40) target.lastElementChild.remove();
   }
@@ -2566,14 +2714,14 @@ export class Panel {
     let scanStats = { discovered: 0, known: 0, pages: 0 };
     let anaStats = { done: 0, failed: 0, total: 0 };
 
+    // One record for the whole run, so the badge can name every stage at once
+    // and the face pass can keep it moving after listing has finished.
+    this.runCounts = { listed: 0, analysed: 0, facesDone: 0, facesTotal: 0, listingDone: false };
     const refreshBadge = () => {
-      this.setStatus({
-        label: `Listing ${nf(scanStats.discovered)} · Analysing ${nf(anaStats.done)}`,
-        // While listing runs the denominator moves, and a bar that went
-        // backwards would read as a regression. Only quantify it once the
-        // total is known.
-        ratio: scanDone && anaStats.total ? (anaStats.done + anaStats.failed) / anaStats.total : null
-      });
+      this.runCounts.listed = scanStats.discovered || 0;
+      this.runCounts.analysed = anaStats.done || 0;
+      this.runCounts.listingDone = scanDone;
+      this.paintRunStatus();
     };
 
     try {
@@ -2620,6 +2768,7 @@ export class Panel {
           // analysis waits forever for items that will never come.
           scanDone = true;
           scanBar.style.width = '100%';
+          refreshBadge();
         });
 
       const analyzeTask = this.analyzer
@@ -2704,6 +2853,8 @@ export class Panel {
       this.flashStatus('Run failed', 'error', 8000);
     } finally {
       this.state.busy = null;
+      this.runCounts = null;
+      this.liveFaces = null;
       await this.reload();
       this.renderAll();
     }

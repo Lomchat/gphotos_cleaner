@@ -45,7 +45,11 @@ function panel({ modelReady = false, download = { ok: true }, items = null } = {
     async saveFaces(results, ids) { this.saved.push(ids); },
     log(_t, message) { logged.push(message); },
     renderAll() {},
-    renderScan() {},
+    // The real ones: a pass repaints progress on every batch, and repainting
+    // must be safe on a panel whose nodes have not been built yet.
+    progressSummary: Panel.prototype.progressSummary,
+    paintProgress: Panel.prototype.paintProgress,
+    paintRunStatus: Panel.prototype.paintRunStatus,
     async reload() {},
     async rebuildGroups() {},
     flashStatus() {},

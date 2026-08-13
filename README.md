@@ -73,6 +73,13 @@ Three controls bound the work, and a banner states what the next run will do:
   makes the size filter, the size order and the "this frees 3.2 GB" line
   possible.
 
+The ring at the top measures the **whole** job, not one stage of it: thumbnails
+measured *and* faces read, each weighted by the number of photos it covers. It
+cannot show 100% while the face pass still has photos to go, and a library with
+nobody in it reaches 100% on measurement alone — there is no identity stage
+waiting to run. The badge names every stage at once, so a run reads
+`Listing 1,200 · Analysing 900 · Faces 40/300` whether or not the panel is open.
+
 **2 · Sort.** The tab itself is a door: a summary and one button. The work
 happens in the wide view — criteria on the left, order buttons above, thumbnails
 filling the rest. Judging thumbnails is the whole task, and a 440px column shows
@@ -518,7 +525,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 497 tests, no external dependencies
+npm test        # 515 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
