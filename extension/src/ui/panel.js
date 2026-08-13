@@ -20,7 +20,7 @@ import {
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
-  SORTS, SORT_KEYS, groupSizeMap, itemBytes, sectionsByPerson
+  SORTS, SORT_KEYS, groupSizeMap, itemBytes, sectionsForSort
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
 import { groupLabel, SHIPPED_EPS } from '../analysis/cluster.js';
@@ -279,9 +279,11 @@ export class Panel {
       browsing: true,
       modalOpen: false,
       dupStale: false,
-      // Set only under the "rarest people" order: the grid split into one
-      // block per person. Null everywhere else.
+      // Set under the orders that answer a question about a group: the grid
+      // split into blocks. Null everywhere else.
       sections: null,
+      // The photo being looked at full size, if any.
+      viewing: null,
       faceModel: null,
       cursor: null,
       // The pending "are you sure" for a move to the bin. Null unless the user
@@ -490,12 +492,18 @@ export class Panel {
     this.panel.append(this.footer);
 
     this.modal = el('div', { class: 'modal', hidden: true });
+    this.viewer = el('div', { class: 'viewer', hidden: true });
 
-    this.wrap.append(this.badge, this.panel, this.modal);
+    this.wrap.append(this.badge, this.panel, this.modal, this.viewer);
 
-    // Escape closes the modal — the expected reflex for a full-screen view.
+    // Escape closes the innermost thing that is open — the viewer sits above
+    // the sorting grid, and closing both at once would lose the user's place.
     this.wrap.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !this.modal.hidden) {
+      if (e.key !== 'Escape') return;
+      if (!this.viewer.hidden) {
+        e.stopPropagation();
+        this.closeViewer();
+      } else if (!this.modal.hidden) {
         e.stopPropagation();
         this.closeModal();
       }
@@ -565,7 +573,7 @@ export class Panel {
           ? 'Nothing matches the active criteria.'
           : 'Nothing here yet — analyse your library first.'));
     } else if (this.state.sections) {
-      put(main, this.buildPersonSections(shown));
+      put(main, this.buildSections(shown));
     } else {
       const grid = el('div', { class: 'grid' });
       shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
@@ -624,17 +632,18 @@ export class Panel {
   }
 
   /**
-   * The grid, split into one block per person.
+   * The grid, split into blocks.
    *
-   * Each block can be ticked whole, which is the action the "rarest people"
-   * order exists to enable: a face that appears four times in twenty years is
-   * a decision about a person, not about four photographs.
+   * A person, a day, a set of lookalikes — whichever the active order groups
+   * by. Each block can be ticked whole, which is the action those orders exist
+   * to enable: a face appearing four times in twenty years, or a burst of
+   * eleven near-identical shots, is one decision rather than eleven.
    *
    * Only the photos actually on screen are drawn — the render limit applies
    * across the whole list — so a block's header says how many of its photos
    * are showing when that is fewer than it holds.
    */
-  buildPersonSections(shown) {
+  buildSections(shown) {
     const out = [];
     // Held so their labels can follow the selection without rebuilding the
     // grid they sit above.
@@ -651,7 +660,6 @@ export class Panel {
       if (!count) continue;
 
       const ids = section.items.map((i) => i.id);
-      const label = section.id === null ? 'Nobody recognised' : groupLabel(section);
       // The label is filled by paintActions, which also keeps it honest as
       // individual photos are ticked underneath it. The handler reads the
       // selection when it fires rather than when it was built, for the same
@@ -662,14 +670,13 @@ export class Panel {
       });
       this.sectionButtons.push({ ids, button });
 
-      out.push(el('section', { class: 'person-block' },
+      out.push(el('section', { class: 'group-block' },
         el('header', {},
-          el('h3', {}, label),
+          el('h3', {}, section.title),
           el('span', { class: 'muted tiny' },
-            (section.id === null
-              ? `${nf(section.items.length)} photo(s)`
-              : `${nf(section.size)} face(s) in the library · ${nf(section.items.length)} here`)
-            + (count < section.items.length ? ` · ${nf(count)} shown` : '')),
+            [section.note, `${nf(section.items.length)} photo(s)`,
+              count < section.items.length ? `${nf(count)} shown` : null]
+              .filter(Boolean).join(' · ')),
           el('span', { class: 'spacer' }),
           // Every photo of the person, not merely the ones drawn: the render
           // limit is a display budget, and a button that silently meant "the
@@ -730,8 +737,105 @@ export class Panel {
               : `${Math.round(item.features.faceScore * 100)}%`)
         : null,
       el('span', { class: 'tags' },
-        (item.matched || []).slice(0, 3).map((m) => el('span', { text: CRITERION_LABELS[m] || m })))
+        (item.matched || []).slice(0, 3).map((m) => el('span', { text: CRITERION_LABELS[m] || m }))),
+
+      // The two facts a delete decision actually rests on, on the tile rather
+      // than in a tooltip nobody hovers: when it was taken, and what it costs.
+      // Size is only there once the metadata pass has run, and is left out
+      // rather than shown as zero.
+      el('span', { class: 'facts' },
+        el('b', {}, item.ts == null ? 'no date' : formatDate(item.ts, item.precision || 'day')),
+        itemBytes(item) ? el('span', {}, formatBytes(itemBytes(item))) : null,
+        item.isVideo && item.duration ? el('span', {}, dur(item.duration)) : null),
+
+      // Opens the full-size view. Its own button rather than a double-click:
+      // every click in this grid ticks something, and a gesture that sometimes
+      // ticks and sometimes opens is the one nobody trusts.
+      el('button', {
+        class: 'zoom',
+        text: item.isVideo ? '▶' : '⤢',
+        title: item.isVideo ? 'Play this video' : 'View full size',
+        onclick: (ev) => { ev.stopPropagation(); this.openViewer(item); }
+      })
     );
+  }
+
+  /* ---------------------------------------------------------------- viewer */
+
+  /**
+   * Show one photo full size, or play one video.
+   *
+   * Both come from the same base URL the grid already holds, asked for
+   * differently: `=w1600-h1600` is a full-size still, and `=m18` is the MP4
+   * Google serves to its own player — verified against a live library, where a
+   * 8-second clip came back as 697KB of video/mp4.
+   *
+   * The still is used for a video too, as the poster, so something is on screen
+   * while the video loads.
+   */
+  openViewer(item) {
+    const base = (item.urlRaw || item.url || '').split('=')[0];
+    if (!base) return;
+    this.state.viewing = item;
+
+    const close = () => this.closeViewer();
+    const media = item.isVideo
+      ? el('video', {
+          src: `${base}=m18`,
+          poster: `${base}=w1600-h1600`,
+          controls: true, autoplay: true, playsInline: true
+        })
+      : el('img', { src: `${base}=w1600-h1600`, referrerPolicy: 'no-referrer' });
+
+    // Held so a tick can repaint it. Rebuilding the sheet would rebuild the
+    // <video> with it, and playback would jump back to the start — the same
+    // rebuild-instead-of-repaint mistake as everywhere else in this file.
+    this.viewerTickButton = el('button', {
+      onclick: () => {
+        const sel = this.state.selection;
+        if (sel.has(item.id)) sel.delete(item.id);
+        else sel.add(item.id);
+        this.paintSelection();
+      }
+    });
+    this.viewerTickId = item.id;
+
+    this.viewer.replaceChildren(
+      el('div', { class: 'sheet' },
+        el('header', {},
+          el('b', {}, item.fileName || item.label || (item.isVideo ? 'Video' : 'Photo')),
+          el('span', { class: 'muted tiny' },
+            [item.ts == null ? null : formatDate(item.ts, item.precision || 'day'),
+              itemBytes(item) ? formatBytes(itemBytes(item)) : null,
+              item.width && item.height ? `${item.width}×${item.height}` : null]
+              .filter(Boolean).join(' · ')),
+          el('span', { class: 'spacer' }),
+          // Deciding is the point of looking closely, so the decision is here
+          // rather than behind a close button.
+          this.viewerTickButton,
+          el('button', { class: 'icon-btn', text: '✕', title: 'Close (Esc)', onclick: close })),
+        el('div', { class: 'stage' }, media),
+        el('footer', {},
+          el('a', {
+            class: 'action',
+            href: `https://photos.google.com/photo/${encodeURIComponent(item.id)}`,
+            target: '_blank', rel: 'noreferrer',
+            text: 'Open in Google Photos'
+          }))),
+      // The backdrop closes, but only when clicked itself: a click that
+      // travelled up from the picture would shut it mid-look.
+      el('div', { class: 'backdrop', onclick: close })
+    );
+    this.viewer.hidden = false;
+  }
+
+  closeViewer() {
+    this.state.viewing = null;
+    this.viewerTickButton = null;
+    this.viewerTickId = null;
+    // Emptied, not merely hidden: a hidden <video> keeps playing.
+    this.viewer.replaceChildren();
+    this.viewer.hidden = true;
   }
 
   /**
@@ -940,7 +1044,12 @@ export class Panel {
    */
   duplicateSelection() {
     const f = this.state.filters;
-    if (!f.enabled.duplicates) return { selectable: new Set(), groups: new Map(), keepers: new Set() };
+    // Computed for the criterion *or* the order: "lookalikes" shows the same
+    // grouping as itself rather than as a filter, and gating it on the
+    // checkbox would leave that order with nothing to group by.
+    if (!f.enabled.duplicates && f.sort !== 'similar') {
+      return { selectable: new Set(), groups: new Map(), keepers: new Set() };
+    }
     const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}`;
     if (!this.dupCache || this.dupCache.key !== key) {
       const groups = clusterDuplicates(this.state.items, {
@@ -966,27 +1075,35 @@ export class Panel {
     this.syncBlockedCriteria();
     const dup = this.duplicateSelection();
     this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
+    // How many photos each lookalike set holds, so the order can rank by it.
+    const similarSize = new Map();
+    for (const members of dup.groups.values()) {
+      for (const id of members) similarSize.set(id, members.length);
+    }
     const r = applyFilters(this.state.items, this.state.filters, dup, {
-      groupSizes: groupSizeMap(this.state.people.groups)
+      groupSizes: groupSizeMap(this.state.people.groups),
+      similarSize
     });
     this.state.filtered = r.items;
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
     this.state.browsing = !!r.browsing;
 
-    // Ordering by rarest person is the only order whose point is a *person*
-    // rather than a property of one photo, so it is the only one that gets
-    // sections. The flat list is rebuilt from them, in the order they are
-    // shown, because the grid addresses tiles by their index into it — and
-    // shift-ranges cross section boundaries as a result, which is what you
-    // want when a person's photos run past the end of one.
-    this.state.sections = null;
-    if (this.state.filters.sort === 'rarePeople' && this.state.people.groups.length) {
-      const sections = sectionsByPerson(this.state.filtered, this.state.people.groups);
-      if (sections.length) {
-        this.state.sections = sections;
-        this.state.filtered = sections.flatMap((sec) => sec.items);
-      }
+    // Some orders answer a question about a *group* — a person, a day, a set of
+    // near-identical shots — and a flat grid gives no way to act on the answer.
+    // Which ones is decided in one place, so an order cannot be half-wired.
+    //
+    // The flat list is rebuilt from the blocks in the order they are shown,
+    // because the grid addresses tiles by their index into it. Shift-ranges
+    // cross block boundaries as a result, which is what you want when a run of
+    // photos spills past the end of one.
+    const sections = sectionsForSort(this.state.filtered, this.state.filters.sort, {
+      groups: this.state.people.groups,
+      duplicates: dup.groups
+    });
+    this.state.sections = sections && sections.length ? sections : null;
+    if (this.state.sections) {
+      this.state.filtered = this.state.sections.flatMap((sec) => sec.items);
     }
     // With criteria on, everything shown was chosen by a rule, so ticking it
     // all is the useful default — and any filter change resets it, because a
@@ -1302,7 +1419,18 @@ export class Panel {
       el('div', { class: 'hero-side' },
         this.heroTitle,
         this.heroSub,
-        this.buildMilestones(s.total, s.analysed, s.complete)));
+        this.buildMilestones(s.total, s.analysed, s.complete),
+        // The analysis is a means, and when it finishes the next step is
+        // always the same one. Making it findable from here saves crossing two
+        // tabs to reach the thing the whole run was for.
+        s.total
+          ? el('button', {
+              class: 'action primary wide', style: 'margin-top:10px',
+              text: s.complete ? '⤢  Sort my library' : '⤢  Sort what is ready',
+              disabled: !!this.state.busy,
+              onclick: () => { this.state.tab = 'sort'; this.openModal(); }
+            })
+          : null));
   }
 
   /**
@@ -1820,6 +1948,7 @@ export class Panel {
     const row = el('div', { class: 'sorts' });
 
     const anySized = this.state.items.some((i) => itemBytes(i) > 0);
+    const anyHashed = this.state.items.some((i) => i.features?.dhash);
 
     for (const key of SORT_KEYS) {
       const sort = SORTS[key];
@@ -1830,7 +1959,9 @@ export class Panel {
         ? 'Needs people: run the analysis with grouping switched on.'
         : sort.needsSizes && !anySized
           ? 'Needs file sizes: run the analysis with "fetch file names and sizes" switched on.'
-          : null;
+          : sort.needsSimilar && !anyHashed
+            ? 'Needs the analysis: lookalikes are found from the fingerprints it measures.'
+            : null;
       row.append(el('button', {
         class: `sort${f.sort === key ? ' on' : ''}`,
         text: sort.label,
@@ -1982,8 +2113,16 @@ export class Panel {
         }),
         el('span', { class: 'icon' }, crit.icon || ''),
         crit.label,
+        // The explanation moves onto a mark you can hover. Spelled out under
+        // every criterion, thirteen of them filled the column and you could
+        // see four at a time — and the text is worth reading once, not on
+        // every visit.
+        el('span', { class: 'why', title: crit.hint, 'aria-label': crit.hint }, '?'),
         counter),
-      el('div', { class: 'hint' }, blocked || crit.hint),
+      // A blocked criterion is the exception: that is not an explanation of
+      // what it does, it is the reason it cannot be used, and hiding it would
+      // leave a greyed-out box with no account of itself.
+      blocked ? el('div', { class: 'hint' }, blocked) : null,
       // Only offer a way out when the fix is somewhere else. When the answer is
       // "pick someone", the list is directly below and a button sending the
       // user to another tab would be worse than no button at all.
@@ -2192,6 +2331,11 @@ export class Panel {
     // Text into nodes that already exist, never new nodes: this runs on every
     // click in a grid of hundreds.
     if (this.modalTicked) this.modalTicked.textContent = nf(n);
+    if (this.viewerTickButton && this.viewerTickId) {
+      const on = this.state.selection.has(this.viewerTickId);
+      this.viewerTickButton.textContent = on ? '✓ Ticked' : 'Tick this one';
+      this.viewerTickButton.className = on ? 'action primary' : 'action';
+    }
     for (const { ids, button } of this.sectionButtons || []) {
       const all = ids.length > 0 && ids.every((id) => this.state.selection.has(id));
       button.textContent = `${all ? 'Untick' : 'Tick'} all ${nf(ids.length)}`;

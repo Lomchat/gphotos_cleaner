@@ -762,8 +762,8 @@ footer .buttons button { flex: 1; }
 
 /* --------------------------------------------------- one block per person */
 
-.person-block { margin: 0 0 18px; }
-.person-block > header {
+.group-block { margin: 0 0 18px; }
+.group-block > header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -776,14 +776,119 @@ footer .buttons button { flex: 1; }
   z-index: 1;
   background: var(--bg);
 }
-.person-block > header h3 {
+.group-block > header h3 {
   margin: 0;
   font: 600 12.5px/1.3 inherit;
   letter-spacing: .01em;
 }
-.person-block > header .spacer { flex: 1; }
-.person-block > header .action { padding: 3px 9px; font-size: 11px; }
-.person-block .grid { margin-top: 8px; }
+.group-block > header .spacer { flex: 1; }
+.group-block > header .action { padding: 3px 9px; font-size: 11px; }
+.group-block .grid { margin-top: 8px; }
+
+/* ------------------------------------------------- facts on a thumbnail */
+
+/* The date and what it costs, on the tile rather than in a tooltip nobody
+   hovers — these are what a delete decision actually rests on. Bottom-left,
+   so the tick mark and the criterion tags keep their corners. */
+.thumb .facts {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 12px 5px 4px;
+  font: 500 9.5px/1.25 inherit;
+  color: #fff;
+  background: linear-gradient(transparent, rgba(0,0,0,.72));
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,.9);
+}
+.thumb .facts b { font-weight: 700; }
+.thumb .facts span { opacity: .85; }
+
+/* Opening the full size is its own button: every other click in this grid
+   ticks something. Hidden until the tile is hovered so it does not compete
+   with the photograph. */
+.thumb .zoom {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(0,0,0,.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 22px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s, background .12s;
+}
+.thumb:hover .zoom, .thumb .zoom:focus-visible { opacity: 1; }
+.thumb .zoom:hover { background: rgba(0,0,0,.85); }
+
+/* --------------------------------------------------------- the full view */
+
+.viewer { position: fixed; inset: 0; z-index: 2147483001; }
+.viewer .backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.82); }
+.viewer .sheet {
+  position: absolute;
+  inset: 3vh 3vw;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: 0 20px 70px rgba(0,0,0,.6);
+}
+.viewer header { display: flex; align-items: center; gap: 10px; }
+.viewer header .spacer { flex: 1; }
+.viewer .stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.viewer .stage img, .viewer .stage video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.viewer footer { display: flex; gap: 8px; }
+.viewer footer .action { text-decoration: none; }
+
+/* ------------------------------------------------- the explanation mark */
+
+/* The hint used to sit under every criterion. Thirteen of them filled the
+   column four at a time; it is worth reading once, not on every visit. */
+.why {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: help;
+  flex: none;
+}
+.why:hover { color: var(--text); border-color: var(--text-dim); }
 
 /* ------------------------------------------------------------- people tab */
 

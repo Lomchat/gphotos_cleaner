@@ -96,9 +96,17 @@ test('an empty list produces no blocks at all', () => {
 });
 
 test('a block carries what it needs to label itself', () => {
+  // The same shape for every order, so the panel renders blocks without
+  // knowing which question it is showing the answer to.
   const sections = sectionsByPerson([photo('a', [0])], [group(0, 7, 'Grandma')]);
-  assert.equal(sections[0].name, 'Grandma');
-  assert.equal(sections[0].size, 7);
+  assert.equal(sections[0].title, 'Grandma');
+  assert.match(sections[0].note, /7 face/);
+  assert.ok(sections[0].key, 'and a stable key');
+});
+
+test('an unnamed person is still identifiable', () => {
+  const sections = sectionsByPerson([photo('a', [3])], [group(3, 2)]);
+  assert.equal(sections[0].title, 'Person 4', 'ids are positional; people count from one');
 });
 
 /* ------------------------------------------------------- ticking a person */
@@ -195,20 +203,23 @@ test('unpicking one of several leaves the criterion on', () => {
 
 const SOURCE = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
 
-test('only the rarest-people order splits the grid', () => {
-  // Every other order ranks a property of one photograph. Sections there would
-  // be a grouping nobody asked about.
+test('which orders split the grid is decided in one place', () => {
+  // Three of them answer a question about a group; the rest rank a property of
+  // one photograph. Spreading that decision across the panel is how an order
+  // gets half-wired.
   const body = SOURCE.slice(SOURCE.indexOf('  recompute() {'), SOURCE.indexOf('  renderAll() {'));
-  assert.match(body, /this\.state\.filters\.sort === 'rarePeople'/);
-  assert.match(body, /this\.state\.people\.groups\.length/, 'and only once there are people');
-  assert.match(body, /this\.state\.sections = null/, 'cleared for every other order');
+  assert.match(body, /sectionsForSort\(/);
+  assert.equal(/sort === 'rarePeople'|sort === 'oldest'|sort === 'similar'/.test(body), false,
+    'the panel must not re-decide which orders section themselves');
 });
 
 test('the flat list is rebuilt from the blocks, in the order shown', () => {
   // Tiles are addressed by index into it. A list in a different order from the
   // grid would tick the wrong photographs.
   const body = SOURCE.slice(SOURCE.indexOf('  recompute() {'), SOURCE.indexOf('  renderAll() {'));
-  assert.match(body, /this\.state\.filtered = sections\.flatMap/);
+  assert.match(body, /this\.state\.filtered = this\.state\.sections\.flatMap/);
+  assert.match(body, /this\.state\.sections = sections && sections\.length \? sections : null/,
+    'an order with no blocks must fall back to a plain grid');
 });
 
 test('a block tick repaints, and never re-renders', () => {
@@ -240,8 +251,112 @@ test('a block button follows the selection under it', () => {
 });
 
 test('tick-all covers the whole block, not the part on screen', () => {
-  const body = SOURCE.slice(SOURCE.indexOf('  buildPersonSections('), SOURCE.indexOf('  toggleSection('));
+  const body = SOURCE.slice(SOURCE.indexOf('  buildSections('), SOURCE.indexOf('  toggleSection('));
   assert.match(body, /const ids = section\.items\.map/,
     'the ids must come from the section, never from the rendered slice');
   assert.match(body, /shown/, 'while only the drawn part is built');
+});
+
+/* ------------------------------------------------------ blocks by day */
+
+import { sectionsByDay, sectionsBySimilarity, sectionsForSort, SORTS } from '../src/common/filters.js';
+
+const dated = (id, iso) => ({ id, ts: new Date(iso).getTime() });
+
+test('a day becomes a block', () => {
+  const sections = sectionsByDay([
+    dated('a', '2024-03-02T09:00:00'),
+    dated('b', '2024-03-02T18:00:00'),
+    dated('c', '2024-03-05T10:00:00')
+  ]);
+  assert.equal(sections.length, 2);
+  assert.deepEqual(sections.map((s) => s.items.length), [2, 1]);
+  assert.match(sections[0].title, /2024-03-02/);
+});
+
+test('the blocks keep the order they were given', () => {
+  // Oldest and newest are opposite buttons. Re-sorting here would make the
+  // blocks disagree with the one the user pressed.
+  const newestFirst = [dated('c', '2024-03-05T10:00:00'), dated('a', '2024-03-02T09:00:00')];
+  assert.deepEqual(sectionsByDay(newestFirst).map((s) => s.items[0].id), ['c', 'a']);
+});
+
+test('undated photos get their own block rather than a wrong day', () => {
+  const sections = sectionsByDay([dated('a', '2024-03-02T09:00:00'), { id: 'x', ts: null }]);
+  assert.equal(sections.at(-1).title, 'No date');
+  assert.equal(sections.at(-1).items.length, 1);
+});
+
+test('a list that is not in date order produces more blocks, not a wrong one', () => {
+  // Splitting consecutive runs cannot invent a day that is not there.
+  const sections = sectionsByDay([
+    dated('a', '2024-03-02T09:00:00'),
+    dated('b', '2024-03-05T09:00:00'),
+    dated('c', '2024-03-02T11:00:00')
+  ]);
+  assert.equal(sections.length, 3);
+  for (const s of sections) assert.equal(s.items.length, 1);
+});
+
+/* ------------------------------------------------ blocks by lookalike */
+
+test('each set of lookalikes becomes a block, biggest first', () => {
+  const groups = new Map([['r1', ['a', 'b']], ['r2', ['c', 'd', 'e']]]);
+  const items = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id }));
+  const sections = sectionsBySimilarity(items, groups);
+  assert.deepEqual(sections.map((s) => s.items.length), [3, 2]);
+  assert.match(sections[0].title, /3 lookalikes/);
+});
+
+test('photos nothing resembles go last, together', () => {
+  const groups = new Map([['r1', ['a', 'b']]]);
+  const items = ['a', 'b', 'lonely'].map((id) => ({ id }));
+  const sections = sectionsBySimilarity(items, groups);
+  assert.equal(sections.at(-1).items.length, 1);
+  assert.match(sections.at(-1).title, /Nothing resembles/);
+});
+
+test('a set whose members were all filtered out leaves no empty block', () => {
+  const groups = new Map([['r1', ['a', 'b']], ['r2', ['gone1', 'gone2']]]);
+  const sections = sectionsBySimilarity([{ id: 'a' }, { id: 'b' }], groups);
+  assert.equal(sections.length, 1);
+});
+
+test('no lookalikes at all is a single block, not an error', () => {
+  const sections = sectionsBySimilarity([{ id: 'a' }], new Map());
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].items.length, 1);
+});
+
+/* ----------------------------------------------------- which order splits */
+
+test('only the orders that ask about a group get blocks', () => {
+  const items = [dated('a', '2024-03-02T09:00:00')];
+  const ctx = { groups: [group(0, 3)], duplicates: new Map() };
+  for (const key of ['oldest', 'newest', 'similar']) {
+    assert.ok(sectionsForSort(items, key, ctx), `${key} should split`);
+  }
+  for (const key of ['suspicion', 'noPeople', 'blurry', 'dark', 'biggest']) {
+    assert.equal(sectionsForSort(items, key, ctx), null, `${key} should not split`);
+  }
+});
+
+test('rarest people falls back to a plain grid before there are any people', () => {
+  // Otherwise every photo lands in one giant "nobody recognised" block, which
+  // is a grouping that says nothing.
+  const items = [{ id: 'a' }];
+  assert.equal(sectionsForSort(items, 'rarePeople', { groups: [], duplicates: new Map() }), null);
+  assert.ok(sectionsForSort(items, 'rarePeople', { groups: [group(0, 2)], duplicates: new Map() }));
+});
+
+test('the lookalike order ranks by how big the set is', () => {
+  const ctx = { similarSize: new Map([['a', 5], ['b', 2]]) };
+  assert.equal(SORTS.similar.key({ id: 'a' }, ctx), 5);
+  assert.equal(SORTS.similar.key({ id: 'b' }, ctx), 2);
+  assert.equal(SORTS.similar.key({ id: 'lonely' }, ctx), null, 'and sinks what has no set');
+  assert.equal(SORTS.similar.dir, -1);
+});
+
+test('the lookalike order works before anything has been grouped', () => {
+  assert.equal(SORTS.similar.key({ id: 'a' }, {}), null);
 });

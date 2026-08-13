@@ -305,3 +305,100 @@ test('the ticking log survives the footer being repainted', () => {
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   assert.match(source, /this\.selectLog \|\|= el\('div', \{ class: 'log' \}\)/);
 });
+
+/* --------------------------------------------------- looking at one photo */
+
+/**
+ * The full-size view.
+ *
+ * Both renditions come from the base URL the grid already holds, asked for
+ * differently — verified against a live library: `=w1600-h1600` returns a
+ * 263KB JPEG, and `=m18` on an 8-second clip returns 697KB of video/mp4, which
+ * is the file Google serves to its own player.
+ */
+const PANEL_SOURCE = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+
+function viewerBody() {
+  const start = PANEL_SOURCE.indexOf('  openViewer(item) {');
+  assert.notEqual(start, -1);
+  return PANEL_SOURCE.slice(start, PANEL_SOURCE.indexOf('  closeViewer() {'));
+}
+
+test('a video is played, a photo is shown', () => {
+  const body = viewerBody();
+  assert.match(body, /item\.isVideo[\s\S]{0,120}=m18/);
+  assert.match(body, /=w1600-h1600/);
+  assert.match(body, /controls: true/);
+});
+
+test('the size suffix is replaced, never appended', () => {
+  // The stored URL already carries `=w176-h176`. Appending would ask for a
+  // nonsense size and get a 400.
+  assert.match(viewerBody(), /\.split\('='\)\[0\]/);
+});
+
+test('opening the view does not tick the photo under it', () => {
+  // Every other click in that grid ticks something, so the button has to stop
+  // the click from reaching the tile.
+  const start = PANEL_SOURCE.indexOf("class: 'zoom'");
+  const block = PANEL_SOURCE.slice(start, start + 320);
+  assert.match(block, /ev\.stopPropagation\(\)/);
+  assert.match(block, /this\.openViewer\(item\)/);
+});
+
+test('closing empties the view rather than hiding it', () => {
+  // A hidden <video> keeps playing, and the sound would follow the user back
+  // into the grid with nothing on screen to explain it.
+  const start = PANEL_SOURCE.indexOf('  closeViewer() {');
+  const body = PANEL_SOURCE.slice(start, start + 400);
+  assert.match(body, /replaceChildren\(\)/);
+  assert.match(body, /hidden = true/);
+});
+
+test('Escape closes the view before the grid behind it', () => {
+  // Closing both at once would lose the user's place in a list they were
+  // partway through.
+  const start = PANEL_SOURCE.indexOf("if (e.key !== 'Escape') return;");
+  const body = PANEL_SOURCE.slice(start, start + 420);
+  assert.ok(body.indexOf('closeViewer') < body.indexOf('closeModal'),
+    'the viewer must be tested first');
+});
+
+/* ------------------------------------------------------ facts on the tile */
+
+test('a tile shows the date, and the size when it is known', () => {
+  const start = PANEL_SOURCE.indexOf("el('span', { class: 'facts' }");
+  assert.notEqual(start, -1, 'the tile must carry its facts');
+  const block = PANEL_SOURCE.slice(start, start + 500);
+  assert.match(block, /formatDate/);
+  assert.match(block, /itemBytes\(item\) \?/,
+    'an unmeasured photo must show nothing rather than 0 B');
+});
+
+test('ticking from the full-size view does not restart the video', () => {
+  // Rebuilding the sheet rebuilds the <video> with it, and playback jumps back
+  // to the start. The button is repainted instead, like every other control
+  // that follows the selection.
+  const start = PANEL_SOURCE.indexOf('  openViewer(item) {');
+  const body = PANEL_SOURCE.slice(start, PANEL_SOURCE.indexOf('  closeViewer() {'));
+  assert.match(body, /this\.viewerTickButton = el\('button'/);
+  assert.equal(/onclick[\s\S]{0,200}this\.openViewer\(item\)/.test(body), false,
+    'the viewer must not re-open itself to update one label');
+});
+
+test('the viewer tick follows the selection while it is open', () => {
+  const button = { textContent: '', className: '' };
+  const p = {
+    state: { selection: new Set(), busy: null },
+    viewerTickButton: button, viewerTickId: 'a',
+    sectionButtons: null, modalTicked: null, modalTickButton: null, modalBinButton: null,
+    paintActions: Panel.prototype.paintActions
+  };
+  p.paintActions();
+  assert.match(button.textContent, /Tick this one/);
+
+  p.state.selection.add('a');
+  p.paintActions();
+  assert.match(button.textContent, /Ticked/);
+  assert.match(button.className, /primary/);
+});

@@ -357,6 +357,16 @@ export const SORTS = {
     dir: 1,
     needsPeople: true
   },
+  similar: {
+    label: 'Lookalikes',
+    hint: 'Bursts and near-identical copies, grouped together so a set of eleven is one decision.',
+    // Ranked by how large the set is, so the biggest pile-ups come first. A
+    // photo nothing resembles has no answer here and sinks, which is the same
+    // rule every other order follows.
+    key: (it, ctx) => ctx.similarSize?.get(it.id) ?? null,
+    dir: -1,
+    needsSimilar: true
+  },
   biggest: {
     label: 'Biggest files',
     hint: 'What actually costs you storage, heaviest first.',
@@ -429,22 +439,29 @@ export function groupSizeMap(groups) {
 }
 
 /**
- * Split a list into one section per person, rarest first.
+ * Splitting the grid into blocks.
  *
- * The "rarest people" order already puts the least-photographed faces at the
- * top, but a flat grid gives no way to act on a person — and acting on a person
- * is the whole reason to look at that order: *this face appears four times in
- * twenty years, all of them deletable*.
+ * Three orders answer a question about a *group* of photos rather than about
+ * one: rarest people asks about a person, oldest and newest about a day,
+ * lookalikes about a set of near-identical shots. A flat grid gives no way to
+ * act on the answer — so those orders return blocks, each tickable whole.
  *
- * A photo goes in exactly one section, under the **rarest** person it contains.
- * Repeating it under each of its people would break the flat index the grid and
- * its shift-ranges are built on, and would let "select everyone in this
- * section" quietly reach photos of somebody you were keeping. The rarest is
- * also the right one: a photo holding a stranger and your sister belongs with
- * the stranger, because your sister is the reason to keep it.
+ * Every one produces the same shape, `{ key, title, note, items }`, so the
+ * panel renders blocks without knowing which order it is showing.
  *
- * Photos with nobody recognised come last, in their own section — they are not
- * a person, and mixing them in would make a "select all" mean something
+ * One rule holds across all three: **a photo appears in exactly one block**.
+ * The grid addresses tiles by their index into one flat list rebuilt from these
+ * blocks, so a duplicate would make two tiles claim the same photo — and a
+ * "tick everything here" could then reach a photo the user is keeping.
+ */
+
+/**
+ * One block per person, rarest first.
+ *
+ * A photo goes under the **rarest** person in it: one holding a stranger and
+ * your sister belongs with the stranger, because your sister is the reason to
+ * keep it. Photos with nobody recognised come last, in their own block — they
+ * are not a person, and mixing them in would make "tick all" mean something
  * different at the bottom of the page than at the top.
  */
 export function sectionsByPerson(items, groups = []) {
@@ -470,14 +487,122 @@ export function sectionsByPerson(items, groups = []) {
   }
 
   const sections = [...byPerson.entries()]
-    .map(([id, list]) => ({ id, name: named.get(id) || null, size: size.get(id) ?? 0, items: list }))
-    // By how rare the person is, not by how many of their photos survived the
-    // filters: someone with four faces in the library is the interesting case
-    // even if only one of them matches what is on screen.
-    .sort((a, b) => a.size - b.size || a.id - b.id);
+    .map(([id, list]) => ({
+      key: `person:${id}`,
+      // By how rare the person is, not by how many of their photos survived
+      // the filters: someone with four faces in the library is the interesting
+      // case even if only one of them is on screen.
+      order: size.get(id) ?? 0,
+      id,
+      title: named.get(id) || `Person ${id + 1}`,
+      note: `${size.get(id) ?? 0} face(s) in the library`,
+      items: list
+    }))
+    .sort((a, b) => a.order - b.order || a.id - b.id);
 
-  if (nobody.length) sections.push({ id: null, name: null, size: 0, items: nobody });
+  if (nobody.length) {
+    sections.push({ key: 'person:none', id: null, title: 'Nobody recognised', note: '', items: nobody });
+  }
   return sections;
+}
+
+/**
+ * One block per day, in whatever order the list already has.
+ *
+ * Deliberately not sorted here: the caller has already ordered by oldest or
+ * newest, and re-deciding would make the blocks disagree with the button the
+ * user pressed. Consecutive runs are split, so a list that is not in date
+ * order simply produces more blocks rather than a wrong answer.
+ */
+export function sectionsByDay(items) {
+  const sections = [];
+  let current = null;
+
+  for (const item of items) {
+    const key = item.ts == null ? 'day:none' : `day:${dayKey(item.ts)}`;
+    if (!current || current.key !== key) {
+      current = {
+        key,
+        title: item.ts == null ? 'No date' : dayKey(item.ts),
+        ts: item.ts ?? null,
+        note: '',
+        items: []
+      };
+      sections.push(current);
+    }
+    current.items.push(item);
+  }
+  return sections;
+}
+
+/**
+ * One block per set of lookalikes, the largest sets first.
+ *
+ * This is the duplicates grouping shown as itself rather than as a filter: a
+ * burst of eleven near-identical shots is one decision, and seeing them side by
+ * side is what makes it. Photos with no lookalike go last in a single block —
+ * they are the answer "nothing resembles this", which is worth showing rather
+ * than hiding.
+ */
+export function sectionsBySimilarity(items, groups) {
+  const groupOf = new Map();
+  for (const [root, members] of groups || []) {
+    for (const id of members) groupOf.set(id, root);
+  }
+
+  const byGroup = new Map();
+  const alone = [];
+  for (const item of items) {
+    const root = groupOf.get(item.id);
+    if (root === undefined) {
+      alone.push(item);
+      continue;
+    }
+    if (!byGroup.has(root)) byGroup.set(root, []);
+    byGroup.get(root).push(item);
+  }
+
+  const sections = [...byGroup.entries()]
+    .map(([root, list]) => ({
+      key: `similar:${root}`,
+      root,
+      title: `${list.length} lookalikes`,
+      note: 'one decision, not several',
+      items: list
+    }))
+    // Biggest sets first: eleven near-identical shots are worth more attention
+    // than a pair, and they are also the easiest to act on.
+    .sort((a, b) => b.items.length - a.items.length || (a.root < b.root ? -1 : 1));
+
+  if (alone.length) {
+    sections.push({
+      key: 'similar:none',
+      root: null,
+      title: 'Nothing resembles these',
+      note: '',
+      items: alone
+    });
+  }
+  return sections;
+}
+
+/**
+ * The blocks for an order, or null when it does not have any.
+ *
+ * One place deciding, so the panel never has to know which orders section
+ * themselves — and so adding an order cannot half-wire it.
+ */
+export function sectionsForSort(items, sortKey, { groups = [], duplicates = null } = {}) {
+  if (sortKey === 'rarePeople') {
+    return groups.length ? sectionsByPerson(items, groups) : null;
+  }
+  if (sortKey === 'oldest' || sortKey === 'newest') {
+    return sectionsByDay(items);
+  }
+  if (sortKey === 'similar') {
+    return sectionsBySimilarity(items, duplicates);
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------ statistics */

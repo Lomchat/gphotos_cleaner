@@ -106,6 +106,7 @@ look, not a filter:
 | Most suspicious | Photos tripping the most criteria at once |
 | Surely nobody | Where the detector is most confident no one is there |
 | Rarest people | People who barely appear elsewhere; your regulars sink |
+| Lookalikes | Bursts and near-identical copies, largest sets first |
 | Biggest files | What actually costs you storage |
 | Blurriest / Darkest | The worst of each |
 | Oldest / Newest | By date taken |
@@ -114,13 +115,37 @@ Anything an order cannot judge — a video, an unanalysed photo, an unmeasured
 file — always sinks to the bottom rather than floating into the top, where
 people skim and tick.
 
-**Rarest people splits the grid into one block per person**, rarest first, each
-tickable whole — because that order asks a question about a *person* (this face
-appears four times in twenty years) and a flat grid gives no way to answer it. A
-photo appears once, under the rarest person in it: one holding a stranger and
-your sister belongs with the stranger, since your sister is the reason to keep
-it. **Tick all** takes every photo of that person, not the ones currently drawn.
-Photos with nobody recognised come last, in their own block.
+**Three orders split the grid into blocks**, each tickable whole, because they
+ask about a *group* rather than about one photograph and a flat grid gives no
+way to answer:
+
+| Order | One block per | Left over, in a last block |
+|---|---|---|
+| Rarest people | person, rarest first | nobody recognised |
+| Oldest / Newest | day | no date |
+| Lookalikes | set of near-identical shots, largest first | nothing resembles these |
+
+A photo appears in exactly one block. Under *rarest people* that is the rarest
+person in it — a photo holding a stranger and your sister belongs with the
+stranger, since your sister is the reason to keep it. The grid addresses tiles
+by their index into one flat list rebuilt from these blocks, so a duplicate
+would make two tiles claim the same photo, and "tick everything here" could
+reach one you were keeping.
+
+**Tick all** takes every photo in the block, not the ones currently drawn: the
+render limit is a display budget, and a button that quietly meant "the first
+three hundred" would be the worst kind of wrong here.
+
+Each tile carries the two facts a delete decision rests on — when it was taken
+and what it costs — and a button that opens it full size. Videos play: the same
+base URL serves a 1600px still and, with `=m18`, the MP4 Google gives its own
+player.
+
+The criteria explain themselves on a **?** you can hover rather than a paragraph
+each. Thirteen criteria with a paragraph apiece filled the column four at a
+time, and the text is worth reading once rather than on every visit — but the
+reason a criterion is *blocked* stays on screen, because that is not an
+explanation of what it does.
 
 Picking somebody in the list switches **With selected people** on for you.
 Choosing a person used to change nothing visible, because both people criteria
@@ -592,7 +617,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 575 tests, no external dependencies
+npm test        # 602 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

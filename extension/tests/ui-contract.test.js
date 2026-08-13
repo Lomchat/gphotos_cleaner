@@ -18,7 +18,9 @@ const DEFAULT_SETTINGS_SOURCE = readFileSync(
   new URL('../src/ui/panel.js', import.meta.url), 'utf8'
 );
 import { PANEL_CSS } from '../src/ui/styles.js';
-import { DEFAULT_FILTERS, CRITERION_TESTS, CRITERION_LABELS } from '../src/common/filters.js';
+import {
+  DEFAULT_FILTERS, CRITERION_TESTS, CRITERION_LABELS, SORTS, SORT_KEYS
+} from '../src/common/filters.js';
 
 /* ------------------------------------------------------ criteria <-> filters */
 
@@ -122,7 +124,9 @@ test('every class used by the panel is defined', () => {
     'slider', 'banner', 'kpi', 'progress', 'log', 'summary', 'buttons',
     'hero', 'ring', 'center', 'milestones', 'ms', 'icon', 'mark', 'num',
     'people', 'person', 'faces', 'field', 'card-title', 'tiny',
-    'sorts', 'sortbar', 'ranged'
+    'sorts', 'sortbar', 'ranged',
+    // Blocks, the facts on a tile, the full-size view and the hint mark.
+    'group-block', 'facts', 'zoom', 'viewer', 'sheet', 'stage', 'backdrop', 'why'
   ];
   for (const cls of critical) {
     assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),
@@ -379,4 +383,63 @@ test('the similarity slider spans the measured window and beyond', () => {
   assert.match(body, /min: 0\.45/, 'must reach below the same-person floor');
   assert.match(body, /max: 0\.7/, 'must reach past the stranger threshold, with a warning');
   assert.match(body, /mixed\?|different people/i, 'the risky end must say what goes wrong');
+});
+
+/* ------------------------------------------------- the criteria column */
+
+test('a criterion explains itself on demand, not permanently', () => {
+  // Thirteen criteria each with a paragraph under it filled the column four at
+  // a time. The text is worth reading once, not on every visit.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildCriterion');
+  assert.match(body, /class: 'why', title: crit\.hint/,
+    'the hint must move onto a mark that can be hovered');
+  assert.equal(/el\('div', \{ class: 'hint' \}, blocked \|\| crit\.hint\)/.test(body), false,
+    'and must not also be printed under every one');
+});
+
+test('the reason a criterion is blocked stays on screen', () => {
+  // That is not an explanation of what it does — it is why it cannot be used,
+  // and hiding it leaves a greyed box with no account of itself.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildCriterion');
+  assert.match(body, /blocked \? el\('div', \{ class: 'hint' \}, blocked\) : null/);
+});
+
+test('every criterion still carries a hint worth showing', () => {
+  // Now that it lives in a tooltip, an empty one would leave a mark that does
+  // nothing when hovered.
+  for (const crit of CRITERIA) {
+    assert.ok(crit.hint && crit.hint.length > 20, `${crit.key} has nothing to show`);
+  }
+});
+
+test('the Analyse tab offers the way on to sorting', () => {
+  // The analysis is a means; when it finishes the next step is always the
+  // same one, two tabs away.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildHero');
+  assert.match(body, /this\.openModal\(\)/);
+  assert.match(body, /s\.total\s*\n?\s*\?/, 'and only once there is something to sort');
+});
+
+test('every order has a label and an explanation', () => {
+  // The order bar shows the hint of whichever is active, so a missing one
+  // leaves the line under the buttons blank.
+  for (const key of SORT_KEYS) {
+    assert.ok(SORTS[key].label, `${key} has no label`);
+    assert.ok(SORTS[key].hint && SORTS[key].hint.length > 20, `${key} has no explanation`);
+  }
+});
+
+test('each order that needs a pass says which one', () => {
+  // Shown and disabled rather than hidden, with the reason: a button that
+  // vanishes reads as a bug, and one that does nothing reads as broken.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'buildSortBar');
+  for (const flag of ['needsPeople', 'needsSizes', 'needsSimilar']) {
+    assert.match(body, new RegExp(`sort\.${flag}`), `${flag} is declared but never checked`);
+  }
+  const declared = SORT_KEYS.filter((k) => SORTS[k].needsPeople || SORTS[k].needsSizes || SORTS[k].needsSimilar);
+  assert.ok(declared.length >= 3, 'the gated orders should still be gated');
 });
