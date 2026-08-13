@@ -11,6 +11,7 @@ import * as db from '../content/db.js';
 import { ApiScanner, readCursor, resetCursor } from '../content/api-scanner.js';
 import { Analyzer } from '../content/analyze-client.js';
 import { Selector } from '../content/actions.js';
+import { sleep } from '../content/tiles.js';
 import { Trasher, planTrash, formatBytes } from '../content/trash-client.js';
 import { primeTokens } from '../content/tokens-client.js';
 import {
@@ -53,6 +54,10 @@ const DEFAULT_SETTINGS = {
   // size is the only thing here that says what a photo actually costs you, and
   // it is the reason to delete anything at all.
   scanSizes: true,
+  // Photos already looked at and spared stay out of the sorting view. Without
+  // this the tool is a one-off: keep eighteen hundred of two thousand, and the
+  // next visit offers the same eighteen hundred again.
+  hideKept: true,
   lastAnalysisSplit: null, // where the per-photo work actually goes
   peopleEps: SHIPPED_EPS // how alike two faces must be to count as one person
 };
@@ -99,6 +104,15 @@ export function migrateSettings(stored) {
  * latter rules out any fluidity.
  */
 const LIVE_CLUSTER_MAX = 6000;
+
+/**
+ * How much the face pass asks for at a time while running alongside the
+ * analysis, and how long it waits when nothing is ready yet. Small enough that
+ * a chunk starts soon after its photos are measured, large enough that walking
+ * the catalogue is not the cost.
+ */
+const PEOPLE_CHUNK = 240;
+const PEOPLE_IDLE_MS = 700;
 
 /** Ring instance counter, for unique SVG gradient ids. */
 let ringSeq = 0;
@@ -536,6 +550,7 @@ export class Panel {
       // Forget the nodes that just went away: a repaint into a detached footer
       // is invisible, and would hide the fact that it never ran.
       this.modalTicked = null;
+      this.modalWeight = null;
       this.sectionButtons = null;
       this.modalTickButton = null;
       this.modalBinButton = null;
@@ -559,6 +574,7 @@ export class Panel {
           text: 'All', onclick: () => { this.state.filters.mode = 'all'; this.onFilterChange(); }
         })),
       el('h3', {}, 'Criteria'));
+    put(side, this.buildKeptNote());
     for (const crit of CRITERIA) side.append(this.buildCriterion(crit));
     put(side, this.buildPeopleSection());
 
@@ -609,7 +625,9 @@ export class Panel {
       el('footer', {},
         el('div', { class: 'summary' },
           (this.modalTicked = el('b', {}, '0')),
-          ' ticked · ',
+          ' ticked',
+          (this.modalWeight = el('b', { class: 'weight' })),
+          ' · ',
           el('span', { class: 'muted' }, 'the bin keeps them 60 days')),
         put(el('div', { class: 'buttons' }),
           (this.modalTickButton = el('button', {
@@ -618,6 +636,13 @@ export class Panel {
             title: 'Tick the selection in Google Photos and leave the deleting to you',
             onclick: () => { this.closeModal(); this.startSelect(); }
           })),
+          el('button', {
+            class: 'action',
+            text: 'Keep the rest',
+            title: 'Mark everything shown but not ticked as decided, so it stays out of the next run',
+            disabled: !!this.state.busy || !this.state.filtered.length,
+            onclick: () => { this.closeModal(); this.keepRest(); }
+          }),
           (this.modalBinButton = el('button', {
             class: 'action primary danger',
             // Closed first: the confirmation belongs in the panel, where the
@@ -1056,7 +1081,7 @@ export class Panel {
     if (!f.enabled.duplicates && f.sort !== 'similar') {
       return { selectable: new Set(), groups: new Map(), keepers: new Set() };
     }
-    const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}`;
+    const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}|${this.state.settings.hideKept}`;
     if (!this.dupCache || this.dupCache.key !== key) {
       const groups = clusterDuplicates(this.state.items, {
         distance: f.dupDistance, window: f.dupWindow
@@ -1079,17 +1104,28 @@ export class Panel {
     // dialog must never be.
     this.state.confirmTrash = null;
     this.syncBlockedCriteria();
+    // Decisions are honoured by narrowing what the filters see, not by adding
+    // a predicate: the counter beside a criterion has to equal what ticking it
+    // selects, and both read this same pool.
+    const pool = this.state.settings.hideKept
+      ? this.state.items.filter((it) => !it.kept)
+      : this.state.items;
+    this.state.keptCount = this.state.items.length - this.state.items.filter((it) => !it.kept).length;
+
     const dup = this.duplicateSelection();
-    this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
+    this.state.counts = countPerCriterion(pool, this.state.filters, dup.selectable);
     // How many photos each lookalike set holds, so the order can rank by it.
     const similarSize = new Map();
     for (const members of dup.groups.values()) {
       for (const id of members) similarSize.set(id, members.length);
     }
-    const r = applyFilters(this.state.items, this.state.filters, dup, {
+    const r = applyFilters(pool, this.state.filters, dup, {
       groupSizes: groupSizeMap(this.state.people.groups),
       similarSize
     });
+    // Rebuilt here rather than looked up by scanning: the selection total is
+    // repainted on every click in a grid of hundreds.
+    this.state.byId = new Map(this.state.items.map((it) => [it.id, it]));
     this.state.filtered = r.items;
     this.state.groups = r.groups;
     this.state.keepers = r.keepers;
@@ -1295,6 +1331,7 @@ export class Panel {
         // nothing had happened, which is how it went unnoticed twice.
         this.buildPeopleStatus(),
         this.buildStorageLine(),
+        this.buildKeptNote(),
         failed
           ? el('div', { class: 'muted', style: 'margin-top:8px' },
               `${nf(failed)} thumbnail(s) failed, usually expired URLs. They are retried on the next run.`)
@@ -2229,7 +2266,11 @@ export class Panel {
     const total = nf(this.state.filtered.length);
     const coches = nf(this.state.selection.size);
     if (this.modalCount) this.modalCount.textContent = this.countsLabel();
-    if (this.footerSummary) this.footerSummary.replaceChildren(el('b', {}, coches), ' item(s) ticked');
+    if (this.footerSummary) {
+      this.footerSummary.replaceChildren(
+        el('b', {}, coches), ' item(s) ticked',
+        (this.footerWeight = el('b', { class: 'weight' })));
+    }
     this.paintActions();
   }
 
@@ -2330,13 +2371,41 @@ export class Panel {
    * filter change. Rebuilding the modal instead would throw away the scroll
    * position of the grid being worked through.
    */
+  /**
+   * What the current selection weighs.
+   *
+   * The count alone says nothing about the thing the user is here for. Sizes
+   * are only known for what the metadata pass has covered, so how many of them
+   * were measured travels with the total — a figure over a fifth of the
+   * selection is a different claim from one over all of it.
+   */
+  selectionWeight() {
+    let bytes = 0;
+    let sized = 0;
+    for (const id of this.state.selection) {
+      const b = itemBytes(this.state.byId?.get(id) || {});
+      if (b) { bytes += b; sized++; }
+    }
+    return { bytes, sized, count: this.state.selection.size };
+  }
+
   paintActions() {
     const n = this.state.selection.size;
     const blocked = !!this.state.busy || !n;
+    const weight = this.selectionWeight();
+    const weightText = weight.sized
+      ? formatBytes(weight.bytes) + (weight.sized < n ? ` (of ${nf(weight.sized)})` : '')
+      : '';
 
     // Text into nodes that already exist, never new nodes: this runs on every
     // click in a grid of hundreds.
     if (this.modalTicked) this.modalTicked.textContent = nf(n);
+    if (this.modalWeight) {
+      this.modalWeight.textContent = weightText ? ` · ${weightText}` : '';
+    }
+    if (this.footerWeight) {
+      this.footerWeight.textContent = weightText ? ` · ${weightText}` : '';
+    }
     if (this.viewerTickButton && this.viewerTickId) {
       const on = this.state.selection.has(this.viewerTickId);
       this.viewerTickButton.textContent = on ? '✓ Ticked' : 'Tick this one';
@@ -2527,14 +2596,31 @@ export class Panel {
    * it keeps the existing busy state and writes to the analysis log, so the
    * whole thing reads as one operation with one progress bar.
    */
-  async runPeopleScan({ inline = false, log = null } = {}) {
+  /**
+   * Read faces, either over a fixed list or alongside the analysis.
+   *
+   * `moreComing` turns it into the second shape: rather than taking a snapshot
+   * of what needs reading, it keeps asking the database for whatever the
+   * analysis has just finished measuring, and stops once that returns nothing
+   * and the analysis has ended.
+   *
+   * That is what lets the two stages overlap. They used to run in sequence, so
+   * a run cost the sum of both — while the analysis is bound by the link and
+   * the face pass mostly by the detection and recognition pools, meaning each
+   * spent its time waiting on something the other was not using. The catch is
+   * worth stating plainly: they do share the link, so the analysis reads a
+   * little slower while both are going. It is the total that gets shorter.
+   */
+  async runPeopleScan({ inline = false, log = null, moreComing = null } = {}) {
     if (!inline && this.state.busy) {
       this.flashStatus('Another run is in progress', 'error', 4000);
       return 0;
     }
     const p = this.state.people;
-    const todo = pendingPeople(this.state.items);
-    if (!todo.length) return 0;
+    // Streaming, the work has not been measured yet: it appears as the
+    // analysis produces it.
+    const todo = moreComing ? [] : pendingPeople(this.state.items);
+    if (!todo.length && !moreComing) return 0;
 
     if (!inline) {
       this.state.busy = 'people';
@@ -2553,7 +2639,7 @@ export class Panel {
     }
 
     p.error = null;
-    p.progress = { ratio: 0, label: `0 / ${nf(todo.length)} read` };
+    p.progress = { ratio: 0, label: moreComing ? 'waiting for photos…' : `0 / ${nf(todo.length)} read` };
     // The face stage now counts towards the completion figure, so its size has
     // to be known before the first repaint — otherwise the ring would jump
     // backwards the moment the pass starts.
@@ -2562,37 +2648,73 @@ export class Panel {
       this.runCounts.facesTotal = todo.length;
       this.runCounts.facesDone = 0;
     }
-    if (log) this.log(log, `Reading faces in ${nf(todo.length)} photo(s)…`);
+    if (log) {
+      this.log(log, moreComing
+        ? 'Reading faces alongside the analysis…'
+        : `Reading faces in ${nf(todo.length)} photo(s)…`);
+    }
     this.renderAll();
 
-    const totals = await scanFaces(todo, {
-      // Without this the pass ignored Stop entirely — and it is the longest
-      // stage of a run, so it was the one people actually wanted to stop.
-      signal: this.runAbort?.signal,
-      // The same lever as the analysis: this pass is bound by the same link.
-      inflight: this.state.settings.analyzeInflight,
-      send: (m) => this.send(m),
-      save: (results, ids) => this.saveFaces(results, ids),
-      onProgress: ({ done, total, faces }) => {
-        this.liveFaces = { done, total, faces };
-        p.progress = {
-          ratio: total ? done / total : 1,
-          label: `${nf(done)} / ${nf(total)} read · ${nf(faces)} face(s)`
-        };
-        if (this.runCounts) {
-          this.runCounts.facesDone = done;
-          this.runCounts.facesTotal = total;
+    // Totals accumulate across chunks: streaming, there is no single call whose
+    // return value is the answer.
+    const totals = { scanned: 0, faces: 0, failed: 0, tooSmall: 0, errors: [] };
+    let done = 0;
+    let queued = todo.length;
+
+    const runChunk = async (items) => {
+      const part = await scanFaces(items, {
+        // Without this the pass ignored Stop entirely — and it is the longest
+        // stage of a run, so it was the one people actually wanted to stop.
+        signal: this.runAbort?.signal,
+        // The same lever as the analysis: this pass is bound by the same link.
+        inflight: this.state.settings.analyzeInflight,
+        send: (m) => this.send(m),
+        save: (results, ids) => this.saveFaces(results, ids),
+        onProgress: ({ done: inChunk, faces }) => {
+          const read = done + inChunk;
+          const found = totals.faces + faces;
+          this.liveFaces = { done: read, total: queued, faces: found };
+          p.progress = {
+            ratio: queued ? read / queued : 1,
+            label: `${nf(read)} / ${nf(queued)} read · ${nf(found)} face(s)`
+          };
+          if (this.runCounts) {
+            this.runCounts.facesDone = read;
+            this.runCounts.facesTotal = queued;
+          }
+          if (log) {
+            log.firstElementChild?.remove();
+            this.log(log, `Faces · ${nf(read)} / ${nf(queued)} · ${nf(found)} found`);
+          }
+          // Repainted in place. Re-rendering the tab here rebuilt every node in
+          // it several times a second — the panel looked like it was reloading
+          // in a loop, and the log this run writes into was replaced mid-run.
+          this.paintProgress();
         }
-        if (log) {
-          log.firstElementChild?.remove();
-          this.log(log, `Faces · ${nf(done)} / ${nf(total)} · ${nf(faces)} found`);
+      });
+      for (const key of ['scanned', 'faces', 'failed', 'tooSmall']) totals[key] += part[key];
+      totals.errors.push(...part.errors);
+      done += items.length;
+    };
+
+    if (moreComing) {
+      // Ask for whatever the analysis has finished with, and keep asking while
+      // it is still producing. A chunk at a time rather than everything: the
+      // catalogue is walked by cursor for each answer, and a smaller one comes
+      // back sooner.
+      while (!this.aborting) {
+        const batch = await db.getPeopleCandidates(PEOPLE_CHUNK);
+        if (!batch.length) {
+          if (!moreComing()) break;
+          await sleep(PEOPLE_IDLE_MS);
+          continue;
         }
-        // Repainted in place. Re-rendering the tab here rebuilt every node in
-        // it several times a second — the panel looked like it was reloading
-        // in a loop, and the log this run writes into was replaced mid-run.
-        this.paintProgress();
+        queued += batch.length;
+        await runChunk(batch);
       }
-    });
+    } else if (todo.length) {
+      await runChunk(todo);
+    }
 
     if (totals.errors.length) p.error = totals.errors[0];
     const stopped = this.aborting;
@@ -2968,7 +3090,8 @@ export class Panel {
     }
 
     this.footerSummary = el('div', { class: 'summary' },
-      el('b', {}, nf(n)), ' item(s) ticked');
+      el('b', {}, nf(n)), ' item(s) ticked',
+      (this.footerWeight = el('b', { class: 'weight' })));
     put(
       this.footer,
       this.footerSummary,
@@ -3108,6 +3231,18 @@ export class Panel {
           refreshBadge();
         });
 
+      // The face pass rides alongside rather than after. Started before the
+      // analysis so its model download — the one thing that has to happen
+      // before any face can be read — overlaps with the first thumbnails.
+      let analysisRunning = true;
+      const peopleTask = s.scanPeople
+        ? this.runPeopleScan({ inline: true, log: anaLog, moreComing: () => analysisRunning })
+          .catch((err) => {
+            this.log(anaLog, `Face pass error: ${err.message}`, 'err');
+            return 0;
+          })
+        : Promise.resolve(0);
+
       const analyzeTask = this.analyzer
         .run((st) => {
           anaStats = st;
@@ -3118,6 +3253,9 @@ export class Panel {
         }, { waitForMore: () => !scanDone });
 
       const [, analyzeOutcome] = await Promise.allSettled([scanTask, analyzeTask]);
+      // Only now can the face pass know that nothing more is coming.
+      analysisRunning = false;
+      const peopleDone = await peopleTask;
 
       if (scanError) this.log(scanLog, `Listing error: ${scanError.message}`, 'err');
       else if (scanResult) {
@@ -3171,15 +3309,6 @@ export class Panel {
         this.state.settings.lastAnalysisSplit = { ...anaStats.spent };
         this.persist();
         this.log(anaLog, this.describeAnalysis(anaStats.spent));
-      }
-
-      // The people pass rides on the same run: it needs the face scores the
-      // analysis just produced, so it cannot start earlier, and asking the user
-      // to press a second button for a second wait would be a poor trade.
-      let peopleDone = 0;
-      if (s.scanPeople && !this.aborting) {
-        await this.reload();
-        peopleDone = await this.runPeopleScan({ inline: true, log: anaLog });
       }
 
       this.state.busy = null;
@@ -3298,6 +3427,70 @@ export class Panel {
       await this.reload();
       this.renderAll();
     }
+  }
+
+  /* ------------------------------------------------------------- decisions */
+
+  /**
+   * Mark everything on screen that is *not* ticked as already decided.
+   *
+   * This is the shape the work actually takes: you look through a screenful,
+   * tick the few to remove, and the rest you have just judged and spared. Left
+   * unrecorded, that judgement is thrown away the moment the run ends.
+   *
+   * Only what is currently shown — never the whole library — because only what
+   * was shown has been looked at.
+   */
+  async keepRest() {
+    const spared = this.state.filtered
+      .filter((it) => !this.state.selection.has(it.id))
+      .map((it) => it.id);
+    if (!spared.length) return;
+
+    await db.markKept(spared);
+    await this.reload();
+    this.flashStatus(`${nf(spared.length)} marked as decided`, 'done', 5000);
+    this.renderAll();
+  }
+
+  /** Put every decision back on the table. */
+  async forgetDecisions() {
+    await db.clearKept();
+    await this.reload();
+    this.flashStatus('Decisions forgotten');
+    this.renderAll();
+  }
+
+  /**
+   * The line about decisions, in the sorting view and in the Analyse tab.
+   *
+   * Hidden photos have to be visible as a number somewhere, or a library that
+   * looks empty has no explanation at all.
+   */
+  buildKeptNote() {
+    const kept = this.state.keptCount || 0;
+    if (!kept) return null;
+    const s = this.state.settings;
+    return el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+      `${nf(kept)} photo(s) already decided`,
+      s.hideKept ? ' and hidden. ' : ' — shown anyway. ',
+      el('button', {
+        class: 'reset', style: 'margin-left:4px',
+        text: s.hideKept ? 'Show' : 'Hide',
+        title: s.hideKept ? 'Put them back in the grid' : 'Keep them out of the grid',
+        onclick: () => {
+          s.hideKept = !s.hideKept;
+          this.persist();
+          this.dupCache = null;
+          this.recompute();
+          this.renderAll();
+        }
+      }),
+      el('button', {
+        class: 'reset', style: 'margin-left:4px',
+        text: '↺', title: 'Forget every decision and start over',
+        onclick: () => this.forgetDecisions()
+      }));
   }
 
   /* -------------------------------------------------------------- deletion */

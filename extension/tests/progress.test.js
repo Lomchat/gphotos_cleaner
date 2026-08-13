@@ -155,8 +155,10 @@ test('the face pass repaints rather than re-rendering', () => {
   // renderScan() does replaceChildren() on the whole tab. Called on every
   // batch it made the panel look like it was reloading in a loop, and replaced
   // the log elements the run was still writing into.
-  const start = SOURCE.indexOf('const totals = await scanFaces(');
-  const block = SOURCE.slice(start, SOURCE.indexOf('if (totals.errors.length)', start));
+  // The call moved inside a chunk runner when the pass started streaming
+  // alongside the analysis; the rule it has to keep did not change.
+  const start = SOURCE.indexOf('const part = await scanFaces(');
+  const block = SOURCE.slice(start, SOURCE.indexOf('for (const key of', start));
   assert.match(block, /this\.paintProgress\(\)/);
   assert.equal(/this\.render(Scan|All)\(\)/.test(block), false,
     'a progress tick must not rebuild the tab it is reporting into');

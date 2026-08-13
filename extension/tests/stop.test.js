@@ -196,10 +196,24 @@ test('the run button reflects that a stop is already under way', () => {
 
 /* --------------------------------------------------------------- the run */
 
-test('a stopped run does not start the face pass it never reached', () => {
-  // Stopping during analysis then watching a several-minute face pass begin is
-  // the opposite of what the button says.
-  assert.match(SOURCE, /if \(s\.scanPeople && !this\.aborting\)/);
+test('a stopped run leaves the face pass no way to continue', () => {
+  // It no longer starts *after* the analysis — the two overlap — so "do not
+  // begin it" has become "the loop that feeds it must notice". Its streaming
+  // loop is gated on the same flag Stop sets, and scanFaces gets the signal.
+  const body = SOURCE.slice(SOURCE.indexOf('async runPeopleScan('), SOURCE.indexOf('async rebuildGroups('));
+  assert.match(body, /while \(!this\.aborting\)/,
+    'the loop asking for more work must stop asking');
+  assert.match(body, /signal: this\.runAbort\?\.signal/);
+});
+
+test('the face pass is told when no more photos are coming', () => {
+  // Otherwise it waits for work that will never arrive and the run never ends.
+  const body = SOURCE.slice(SOURCE.indexOf('async doFullRun()'), SOURCE.indexOf('  abortAll() {'));
+  assert.match(body, /analysisRunning = true/);
+  assert.match(body, /analysisRunning = false/);
+  const started = body.indexOf('moreComing: () => analysisRunning');
+  const cleared = body.indexOf('analysisRunning = false');
+  assert.ok(started !== -1 && started < cleared, 'and told only once the analysis has settled');
 });
 
 test('a stopped run reports a stop, at every level that reports anything', () => {

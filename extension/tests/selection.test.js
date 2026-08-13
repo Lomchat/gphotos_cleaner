@@ -243,10 +243,11 @@ test('a tick repaints and never re-renders', () => {
  */
 function actionPanel(selected = []) {
   const p = {
-    state: { selection: new Set(selected), busy: null },
+    state: { selection: new Set(selected), busy: null, byId: new Map() },
     modalTicked: { textContent: '' },
     modalTickButton: { disabled: false },
     modalBinButton: { disabled: false, textContent: '' },
+    selectionWeight: Panel.prototype.selectionWeight,
     paintActions: Panel.prototype.paintActions
   };
   p.paintActions();
@@ -284,8 +285,9 @@ test('repainting a closed modal is not an error', () => {
   // The modal is torn down whenever it closes; a tick from the panel side must
   // not care.
   const p = {
-    state: { selection: new Set(['a']), busy: null },
+    state: { selection: new Set(['a']), busy: null, byId: new Map() },
     modalTicked: null, modalTickButton: null, modalBinButton: null,
+    selectionWeight: Panel.prototype.selectionWeight,
     paintActions: Panel.prototype.paintActions
   };
   assert.doesNotThrow(() => p.paintActions());
@@ -390,9 +392,10 @@ test('ticking from the full-size view does not restart the video', () => {
 test('the viewer tick follows the selection while it is open', () => {
   const button = { textContent: '', className: '' };
   const p = {
-    state: { selection: new Set(), busy: null },
+    state: { selection: new Set(), busy: null, byId: new Map() },
     viewerTickButton: button, viewerTickId: 'a',
     sectionButtons: null, modalTicked: null, modalTickButton: null, modalBinButton: null,
+    selectionWeight: Panel.prototype.selectionWeight,
     paintActions: Panel.prototype.paintActions
   };
   p.paintActions();

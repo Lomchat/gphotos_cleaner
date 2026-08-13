@@ -873,6 +873,10 @@ footer .buttons button { flex: 1; }
 
 /* The hint used to sit under every criterion. Thirteen of them filled the
    column four at a time; it is worth reading once, not on every visit. */
+/* What the selection weighs, beside its count. Amber because it is the number
+   the whole exercise is about. */
+.summary .weight { color: var(--amber); font-weight: 700; }
+
 .why {
   display: inline-flex;
   align-items: center;

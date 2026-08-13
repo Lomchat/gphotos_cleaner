@@ -320,6 +320,85 @@ export async function getPending(limit = Infinity) {
 }
 
 /**
+ * Record that these photos have been looked at and spared.
+ *
+ * Without this the tool is a one-off: look through two thousand photos, keep
+ * eighteen hundred, and the next run offers the same eighteen hundred again.
+ * The mark says "I have already decided about this one", which is a different
+ * fact from anything the analysis measures — so it lives on the item and
+ * survives every later pass.
+ */
+export async function markKept(ids, kept = true) {
+  const list = [...ids];
+  if (!list.length) return 0;
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE_ITEMS, 'readwrite');
+    const store = t.objectStore(STORE_ITEMS);
+    const at = Date.now();
+    for (const id of list) {
+      const get = store.get(id);
+      get.onsuccess = () => {
+        if (!get.result) return;
+        if (kept) store.put({ ...get.result, kept: 1, keptAt: at });
+        else {
+          const { kept: _k, keptAt: _a, ...rest } = get.result;
+          store.put(rest);
+        }
+      };
+    }
+    t.oncomplete = () => resolve(list.length);
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/** Forget every "already decided" mark, without touching the analysis. */
+export async function clearKept() {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction(STORE_ITEMS, 'readwrite');
+    const cursor = t.objectStore(STORE_ITEMS).openCursor();
+    cursor.onsuccess = () => {
+      const c = cursor.result;
+      if (!c) return;
+      if (c.value.kept !== undefined) {
+        const { kept, keptAt, ...rest } = c.value;
+        c.update(rest);
+      }
+      c.continue();
+    };
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+/**
+ * Photos the face pass has not read yet, cheapest first to find.
+ *
+ * Walks the `analyzed` index rather than loading the catalogue: the pass now
+ * runs alongside the analysis and asks repeatedly for whatever has become
+ * ready, so this is called every second or so on a library of any size.
+ */
+export async function getPeopleCandidates(limit = 240, minFaceScore = 0.35) {
+  const store = await tx(STORE_ITEMS, 'readonly');
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const req = store.index('analyzed').openCursor(IDBKeyRange.only(1));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || out.length >= limit) return resolve(out);
+      const v = cursor.value;
+      if (v.url && !v.isVideo && !v.peopleScanned && (v.features?.faceScore ?? 0) >= minFaceScore) {
+        out.push(v);
+      }
+      if (out.length >= limit) return resolve(out);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
  * Forget items entirely, faces included.
  *
  * Used after a move to the bin: the catalogue mirrors the library, so an item

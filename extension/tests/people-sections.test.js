@@ -237,9 +237,10 @@ test('a block button follows the selection under it', () => {
   // or it offers to tick what is already ticked.
   const button = { textContent: '' };
   const p = {
-    state: { selection: new Set(['a']), busy: null },
+    state: { selection: new Set(['a']), busy: null, byId: new Map() },
     sectionButtons: [{ ids: ['a', 'b'], button }],
     modalTicked: null, modalTickButton: null, modalBinButton: null,
+    selectionWeight: Panel.prototype.selectionWeight,
     paintActions: Panel.prototype.paintActions
   };
   p.paintActions();

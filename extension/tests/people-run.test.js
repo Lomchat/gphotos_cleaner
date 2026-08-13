@@ -152,8 +152,9 @@ test('the panel drives both stages from the same setting', () => {
   // They are bound by the same link. Two separate numbers would invite tuning
   // one and wondering why the other did not move.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
-  const start = source.indexOf('const totals = await scanFaces(');
-  assert.match(source.slice(start, start + 500), /inflight: this\.state\.settings\.analyzeInflight/);
+  const start = source.indexOf('const part = await scanFaces(');
+  assert.notEqual(start, -1);
+  assert.match(source.slice(start, start + 600), /inflight: this\.state\.settings\.analyzeInflight/);
 });
 
 /**
