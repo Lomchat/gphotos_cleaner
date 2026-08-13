@@ -458,6 +458,30 @@ saying so beats a silent gap.
 
 ---
 
+## When the extension is reloaded
+
+Reloading or updating an extension does **not** reload the pages it is already
+running on. The old content script keeps going — panel on screen, buttons
+responding — with a dead `chrome.*` bridge underneath, and every call across it
+throws `Extension context invalidated`.
+
+That throw is *synchronous*, which is what makes it nasty:
+`chrome.storage.local.set(...).catch(...)` never reaches its catch, because the
+exception happens before the promise exists. Observed exactly that way — an
+uncaught error in Google's own console, while the panel carried on looking
+healthy and saving nothing.
+
+Every call now goes through `src/content/runtime.js`, which turns a dead bridge
+into one rejection carrying the only instruction that helps. The panel says so
+once rather than once per write, clears whatever it thought it was doing,
+disables the run button, and offers a reload — it does not perform one, because
+a run may be half done or a selection half made.
+
+If you are working on the extension: after **Reload** in `chrome://extensions`,
+reload the Google Photos tab too.
+
+---
+
 ## When Google changes something
 
 There are now two surfaces, and they fail differently.
@@ -494,7 +518,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 481 tests, no external dependencies
+npm test        # 497 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.
@@ -511,6 +535,11 @@ known to work. `tests/tokens.test.js` additionally checks that the two files
 which both have to know the token key list still agree — a MAIN-world content
 script cannot import, so that list is duplicated, and drift there produces a 400
 with no explanation anywhere.
+
+`tests/runtime.test.js` pins what happens when the extension is reloaded while
+a page is open — see below — including that the panel reaches `chrome.*` only
+through the guard, which is the one line that is easy to write unguarded by
+accident.
 
 `tests/trash.test.js` pins the rules around the only destructive action: never
 without a dedup key, never a size figure that was not measured, never a

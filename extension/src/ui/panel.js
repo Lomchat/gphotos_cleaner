@@ -14,6 +14,10 @@ import { Selector } from '../content/actions.js';
 import { Trasher, planTrash, formatBytes } from '../content/trash-client.js';
 import { primeTokens } from '../content/tokens-client.js';
 import {
+  storageGet, storageSet, storageRemove, sendMessage,
+  extensionAlive, isContextLost
+} from '../content/runtime.js';
+import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
   SORTS, SORT_KEYS, groupSizeMap, itemBytes
@@ -280,6 +284,8 @@ export class Panel {
       // The pending "are you sure" for a move to the bin. Null unless the user
       // has pressed the button and not yet answered.
       confirmTrash: null,
+      // Set once the extension bridge dies under us — see `noteContext`.
+      contextLost: false,
       people: { modelReady: false, groups: [], named: [], faceCount: 0, error: null, progress: null },
       // State shown permanently by the badge, even with the panel closed.
       status: { label: null, ratio: null, tone: null }
@@ -333,7 +339,7 @@ export class Panel {
 
   async loadPersisted() {
     try {
-      const got = await chrome.storage.local.get([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
+      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
       if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
       if (Array.isArray(got[PEOPLE_KEY])) {
         // Only names and centroids persist. Groups themselves are rebuilt from
@@ -350,10 +356,56 @@ export class Panel {
     } catch { /* premier lancement */ }
   }
 
+  /**
+   * Save settings and filters.
+   *
+   * Called from every control, so it must never throw: a slider that raises an
+   * uncaught error while being dragged is worse than one that fails to save.
+   * A dead bridge is recorded and shown once, rather than reported on each of
+   * the thirty writes that follow.
+   */
   persist() {
-    chrome.storage.local
-      .set({ [SETTINGS_KEY]: this.state.settings, [FILTERS_KEY]: this.state.filters })
-      .catch(() => {});
+    storageSet({ [SETTINGS_KEY]: this.state.settings, [FILTERS_KEY]: this.state.filters })
+      .catch((err) => this.noteContext(err));
+  }
+
+  /**
+   * Notice that the extension bridge has died, and say so exactly once.
+   *
+   * Reloading the extension leaves this content script running with a dead
+   * `chrome.*`: the panel is still on screen, still responds, and silently does
+   * nothing. Only a page reload fixes it, and only the user can decide when —
+   * so the panel says so and stops pretending.
+   *
+   * @returns {boolean} true if this was a lost context
+   */
+  noteContext(err) {
+    if (!isContextLost(err)) return false;
+    if (this.state.contextLost) return true;
+    this.state.contextLost = true;
+    this.state.busy = null;
+    this.setStatus({ label: 'Reload the page', ratio: null, tone: 'error' });
+    try { this.renderAll(); } catch { /* the panel may be mid-render */ }
+    return true;
+  }
+
+  /**
+   * The one banner that outranks everything else on screen.
+   *
+   * It offers the reload rather than performing it: a run may be half done, or
+   * a selection half made, and throwing the page away without asking would
+   * lose both.
+   */
+  buildContextBanner() {
+    if (!this.state.contextLost) return null;
+    return el('div', { class: 'banner danger', style: 'margin-bottom:12px' },
+      el('b', {}, 'Disconnected from the extension. '),
+      'It was reloaded or updated while this page was open, so this panel can no longer reach it — nothing it shows is being saved.',
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', {
+          class: 'action primary', text: 'Reload the page',
+          onclick: () => location.reload()
+        })));
   }
 
   /* -------------------------------------------------------------- squelette */
@@ -876,6 +928,7 @@ export class Panel {
     put(
 
       t,
+      this.buildContextBanner(),
       this.buildHero(total, analyzed, pending),
       this.buildModelNote(),
       el(
@@ -935,7 +988,10 @@ export class Panel {
             el('button', {
               class: 'action primary',
               text: running ? 'Stop' : this.runLabel(pending),
-              disabled: !!this.state.busy && !running,
+              // A dead bridge means the analysis engine is unreachable: the
+              // run would start, fail on its first batch, and report an error
+              // that says nothing about the actual cause.
+              disabled: this.state.contextLost || (!!this.state.busy && !running),
               onclick: () => (running ? this.abortAll() : this.startFullRun())
             }),
             el('span', { class: 'spacer' }),
@@ -1351,6 +1407,7 @@ export class Panel {
 
     put(
       t,
+      this.buildContextBanner(),
       this.buildCleanupScore(),
       analyzed
         ? null
@@ -1959,7 +2016,10 @@ export class Panel {
   /* ---------------------------------------------------- people actions */
 
   send(message) {
-    return chrome.runtime.sendMessage(message);
+    return sendMessage(message).catch((err) => {
+      this.noteContext(err);
+      throw err;
+    });
   }
 
   /**
@@ -2202,7 +2262,7 @@ export class Panel {
     const named = this.state.people.groups
       .filter((g) => g.name)
       .map((g) => ({ name: g.name, centroid: g.centroid }));
-    chrome.storage.local.set({ [PEOPLE_KEY]: named }).catch(() => {});
+    storageSet({ [PEOPLE_KEY]: named }).catch((err) => this.noteContext(err));
   }
 
 
@@ -2366,7 +2426,7 @@ export class Panel {
     }
     try {
       await db.clearAll();
-      await chrome.storage.local.remove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
+      await storageRemove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
     } catch (err) {
       this.flashStatus(`Reset failed: ${err.message}`, 'error', 8000);
       this.renderAll();
