@@ -92,34 +92,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
 
-  /**
-   * Zoom the tab out while listing, and put it back afterwards.
-   *
-   * Google Photos renders exactly what fits the viewport and nothing beyond it
-   * (measured: zero tiles below the fold). Zooming out enlarges the viewport in
-   * CSS pixels, so one screen holds several times more tiles and the scanner
-   * makes proportionally fewer stops — each of which costs a fixed settle wait.
-   *
-   * It has to happen here: chrome.tabs is unavailable to a content script. The
-   * tab id comes from the sender rather than the message, so a page cannot ask
-   * for some other tab to be zoomed.
-   */
-  if (msg.type === 'SET_ZOOM') {
-    (async () => {
-      const tabId = sender?.tab?.id;
-      if (!tabId) return sendResponse({ ok: false, error: 'no tab' });
-      try {
-        // Per-tab, so the user's own zoom for photos.google.com survives.
-        await chrome.tabs.setZoomSettings(tabId, { scope: 'per-tab', mode: 'automatic' });
-        await chrome.tabs.setZoom(tabId, msg.factor);
-        sendResponse({ ok: true, factor: await chrome.tabs.getZoom(tabId) });
-      } catch (err) {
-        sendResponse({ ok: false, error: String(err?.message || err) });
-      }
-    })();
-    return true;
-  }
-
   if (msg.type === 'ENGINE_STATUS') {
     (async () => {
       try {

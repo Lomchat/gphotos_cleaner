@@ -20,7 +20,8 @@
  */
 
 import { getPending as dbGetPending, saveFeatures as dbSaveFeatures } from './db.js';
-import { sleep as realSleep } from './scanner.js';
+import { sleep as realSleep } from './tiles.js';
+import { sendMessage, isContextLost } from './runtime.js';
 
 const DEFAULTS = {
   batchSize: 24,
@@ -73,7 +74,7 @@ export class Analyzer {
 
   async engineStatus() {
     try {
-      return await chrome.runtime.sendMessage({ type: 'ENGINE_STATUS' });
+      return await sendMessage({ type: 'ENGINE_STATUS' });
     } catch (err) {
       return { ok: false, error: String(err?.message || err) };
     }
@@ -176,16 +177,24 @@ function emptySpent() {
   return { fetch: 0, decode: 0, features: 0, detect: 0, photos: 0 };
 }
 
-/** One round-trip to the engine, retried if the service worker was recycled. */
+/**
+ * One round-trip to the engine, retried if the service worker was recycled.
+ *
+ * A recycled worker is transient and worth a second attempt. A reloaded
+ * extension is not — it will fail identically forever — so that case is
+ * reported straight away, with the only instruction that helps.
+ */
 async function defaultSendBatch(items, sleep) {
   let res;
   try {
-    res = await chrome.runtime.sendMessage({ type: 'ANALYZE_BATCH', items });
-  } catch {
+    res = await sendMessage({ type: 'ANALYZE_BATCH', items });
+  } catch (first) {
+    if (isContextLost(first)) throw first;
     await sleep(400);
     try {
-      res = await chrome.runtime.sendMessage({ type: 'ANALYZE_BATCH', items });
+      res = await sendMessage({ type: 'ANALYZE_BATCH', items });
     } catch (err) {
+      if (isContextLost(err)) throw err;
       throw new Error(
         `Analysis engine unreachable (${String(err?.message || err)}). Reload the page.`
       );

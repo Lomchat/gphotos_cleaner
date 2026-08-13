@@ -173,6 +173,44 @@ test('the content script targets Google Photos and runs at the right time', () =
   assert.equal(cs.all_frames, false, 'the panel must exist only once');
 });
 
+/* --------------------------------------------------------- the token bridge */
+
+test('one content script runs in the page\'s own world', () => {
+  // The session credentials live in `window.WIZ_global_data`, which an isolated
+  // content script cannot see: the object is simply not there. Without this
+  // entry every API call fails as "not signed in", on a page where the user
+  // plainly is.
+  const main = manifest.content_scripts.filter((cs) => cs.world === 'MAIN');
+  assert.equal(main.length, 1, 'exactly one MAIN-world script');
+  assert.deepEqual(main[0].matches, ['https://photos.google.com/*']);
+  assert.equal(main[0].all_frames, false);
+  assert.equal(main[0].js.length, 1, 'nothing else belongs in a shared global scope');
+});
+
+test('the bridge runs before the page has finished building', () => {
+  // It has to be listening when the isolated side asks, and the values it reads
+  // are inlined in the document from the start.
+  const main = manifest.content_scripts.find((cs) => cs.world === 'MAIN');
+  assert.equal(main.run_at, 'document_start');
+});
+
+test('only the bridge runs in the page world', () => {
+  // Everything else stays isolated. A second MAIN-world file would share a
+  // global scope with Google's own application.
+  for (const cs of manifest.content_scripts) {
+    if (cs.world === 'MAIN') continue;
+    assert.equal(cs.world, undefined, `${cs.js.join(', ')} must stay in the isolated world`);
+  }
+});
+
+test('the MAIN-world script is not web-accessible', () => {
+  // It is injected by the manifest, not imported. Exposing it would let any
+  // page on the origin load the file that reads the session tokens.
+  const main = manifest.content_scripts.find((cs) => cs.world === 'MAIN').js[0];
+  assert.equal(isAccessible(main), false,
+    `${main} is injected directly; it must not also be exposed as a resource`);
+});
+
 test('the service worker is an ES module', () => {
   // The file uses `import` syntax: without "type": "module" it would not load
   // and analysis would be unreachable.

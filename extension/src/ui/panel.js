@@ -8,20 +8,19 @@
 
 import { PANEL_CSS } from './styles.js';
 import * as db from '../content/db.js';
-import * as dom from '../content/dom-adapter.js';
-import {
-  Scanner, readCursor, resetCursor,
-  repairThumbnails, planThumbRepair, MAX_THUMB_ATTEMPTS
-} from '../content/scanner.js';
+import { ApiScanner, readCursor, resetCursor } from '../content/api-scanner.js';
 import { Analyzer } from '../content/analyze-client.js';
 import { Selector } from '../content/actions.js';
+import { Trasher, planTrash, formatBytes } from '../content/trash-client.js';
+import { primeTokens } from '../content/tokens-client.js';
 import {
-  withZoom, ZOOM_STEPS, MIN_FACTOR, DEFAULT_FACTOR as ZOOM_DEFAULT
-} from '../content/zoom.js';
+  storageGet, storageSet, storageRemove, sendMessage,
+  extensionAlive, isContextLost
+} from '../content/runtime.js';
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
-  SORTS, SORT_KEYS, groupSizeMap
+  SORTS, SORT_KEYS, groupSizeMap, itemBytes
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
 import { groupLabel, DEFAULT_EPS } from '../analysis/cluster.js';
@@ -40,11 +39,6 @@ const DEFAULT_SETTINGS = {
   // scale (verified by tests) for about half the bytes of 256px — and transfer
   // is the dominant cost.
   thumbSize: 176,
-  scanStepRatio: 0.82,
-  scanSettleMaxMs: 1200,
-  thumbWaitMaxMs: 5000,
-  autoRepairThumbs: true,
-  autoRepairLimit: 500,
   resumeScan: true,
   // One volume limit per run. A single visible action means a single limit:
   // two separate counters behind one button were impossible to reason about.
@@ -55,14 +49,28 @@ const DEFAULT_SETTINGS = {
   analyzeInflight: 3,
   scanOlderThanTs: null,  // only handle items older than this date
   scanPeople: true,      // read faces as part of the main run
-  scanZoom: ZOOM_DEFAULT, // page zoom while listing; 1 = leave it alone
-  lastTilesPerStep: 0,   // measured, so the setting can be judged not guessed
-  lastWaitSplit: null,   // {settle, thumbs} — which fix would actually help
+  // File name and byte size come from a second call per 200 items. Worth it:
+  // size is the only thing here that says what a photo actually costs you, and
+  // it is the reason to delete anything at all.
+  scanSizes: true,
   lastAnalysisSplit: null, // where the per-photo work actually goes
-  lastThumbRatio: null,  // images ready when the grid was harvested
-  lastRunStarved: false, // Google rendered tiles but served no images
   peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
+
+/**
+ * Settings that belonged to the scroll-and-harvest scanner.
+ *
+ * Nothing reads them any more — the API needs no scroll step, no render wait,
+ * no thumbnail patience and no page zoom, because it renders nothing. They are
+ * dropped rather than left lying in storage, so a stored value can never be
+ * mistaken for a live control.
+ */
+const RETIRED_SETTINGS = [
+  'scanMaxPerPass', 'analyzeMaxPerPass', 'scanSinceTs',
+  'scanStepRatio', 'scanSettleMaxMs', 'thumbWaitMaxMs',
+  'autoRepairThumbs', 'autoRepairLimit', 'scanZoom',
+  'lastTilesPerStep', 'lastWaitSplit', 'lastThumbRatio', 'lastRunStarved'
+];
 
 /**
  * Carry settings over from an earlier version.
@@ -79,11 +87,9 @@ export function migrateSettings(stored) {
       .filter((v) => Number.isFinite(v) && v > 0);
     if (legacy.length) out.maxPerRun = Math.min(...legacy);
   }
-  delete out.scanMaxPerPass;
-  delete out.analyzeMaxPerPass;
   // The old time-window key meant the opposite (keep only recent items).
   // Carrying it over would silently invert the scope, so drop it instead.
-  delete out.scanSinceTs;
+  for (const key of RETIRED_SETTINGS) delete out[key];
   return out;
 }
 
@@ -178,6 +184,13 @@ export const CRITERIA = [
     controls: [{ prop: 'longVideoSec', label: 'Min length', min: 10, max: 1800, step: 10, fmt: dur }]
   },
   {
+    key: 'largeFile',
+    icon: '💾',
+    label: 'Large files',
+    hint: 'The real size on Google\'s servers, which the grid never showed. Deleting one of these frees as much as hundreds of ordinary photos.',
+    controls: [{ prop: 'largeFileMb', label: 'At least', min: 1, max: 500, step: 1, fmt: (v) => `${v} MB` }]
+  },
+  {
     key: 'dateRange',
     icon: '📅',
     label: 'Date range',
@@ -268,6 +281,11 @@ export class Panel {
       dupStale: false,
       faceModel: null,
       cursor: null,
+      // The pending "are you sure" for a move to the bin. Null unless the user
+      // has pressed the button and not yet answered.
+      confirmTrash: null,
+      // Set once the extension bridge dies under us — see `noteContext`.
+      contextLost: false,
       people: { modelReady: false, groups: [], named: [], faceCount: 0, error: null, progress: null },
       // State shown permanently by the badge, even with the panel closed.
       status: { label: null, ratio: null, tone: null }
@@ -276,12 +294,21 @@ export class Panel {
     this.scanner = null;
     this.analyzer = null;
     this.selector = null;
+    this.trasher = null;
     this.dupCache = null;
     this.liveFrame = null;
     this.counterEls = new Map();
     this.anchorIndex = null;
     this.rangePreview = null;
     this.shiftHeld = false;
+    // Live counters for the badge during a run, and the face pass's own
+    // numbers while it is going. Both exist so progress can be repainted
+    // without rebuilding the tab that shows it.
+    this.runCounts = null;
+    this.liveFaces = null;
+    // One signal for a whole run. Every stage watches it, including the ones
+    // that live in another document — the face pass reads it between batches.
+    this.runAbort = null;
   }
 
   /* ------------------------------------------------------------- montage */
@@ -303,6 +330,11 @@ export class Panel {
     }).observe(document.documentElement, { childList: true });
 
     await this.loadPersisted();
+    // Ask the page for its session credentials now rather than when the run
+    // button is pressed: they arrive in a message from the other JavaScript
+    // world, and waiting for that on the click would show a pause with no
+    // explanation.
+    primeTokens();
     this.watchShift();
     this.build();
     await this.reload();
@@ -315,7 +347,7 @@ export class Panel {
 
   async loadPersisted() {
     try {
-      const got = await chrome.storage.local.get([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
+      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
       if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
       if (Array.isArray(got[PEOPLE_KEY])) {
         // Only names and centroids persist. Groups themselves are rebuilt from
@@ -332,10 +364,56 @@ export class Panel {
     } catch { /* premier lancement */ }
   }
 
+  /**
+   * Save settings and filters.
+   *
+   * Called from every control, so it must never throw: a slider that raises an
+   * uncaught error while being dragged is worse than one that fails to save.
+   * A dead bridge is recorded and shown once, rather than reported on each of
+   * the thirty writes that follow.
+   */
   persist() {
-    chrome.storage.local
-      .set({ [SETTINGS_KEY]: this.state.settings, [FILTERS_KEY]: this.state.filters })
-      .catch(() => {});
+    storageSet({ [SETTINGS_KEY]: this.state.settings, [FILTERS_KEY]: this.state.filters })
+      .catch((err) => this.noteContext(err));
+  }
+
+  /**
+   * Notice that the extension bridge has died, and say so exactly once.
+   *
+   * Reloading the extension leaves this content script running with a dead
+   * `chrome.*`: the panel is still on screen, still responds, and silently does
+   * nothing. Only a page reload fixes it, and only the user can decide when —
+   * so the panel says so and stops pretending.
+   *
+   * @returns {boolean} true if this was a lost context
+   */
+  noteContext(err) {
+    if (!isContextLost(err)) return false;
+    if (this.state.contextLost) return true;
+    this.state.contextLost = true;
+    this.state.busy = null;
+    this.setStatus({ label: 'Reload the page', ratio: null, tone: 'error' });
+    try { this.renderAll(); } catch { /* the panel may be mid-render */ }
+    return true;
+  }
+
+  /**
+   * The one banner that outranks everything else on screen.
+   *
+   * It offers the reload rather than performing it: a run may be half done, or
+   * a selection half made, and throwing the page away without asking would
+   * lose both.
+   */
+  buildContextBanner() {
+    if (!this.state.contextLost) return null;
+    return el('div', { class: 'banner danger', style: 'margin-bottom:12px' },
+      el('b', {}, 'Disconnected from the extension. '),
+      'It was reloaded or updated while this page was open, so this panel can no longer reach it — nothing it shows is being saved.',
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', {
+          class: 'action primary', text: 'Reload the page',
+          onclick: () => location.reload()
+        })));
   }
 
   /* -------------------------------------------------------------- squelette */
@@ -444,6 +522,11 @@ export class Panel {
     this.modal.hidden = !this.state.modalOpen;
     if (!this.state.modalOpen) {
       this.modal.replaceChildren();
+      // Forget the nodes that just went away: a repaint into a detached footer
+      // is invisible, and would hide the fact that it never ran.
+      this.modalTicked = null;
+      this.modalTickButton = null;
+      this.modalBinButton = null;
       return;
     }
 
@@ -511,15 +594,27 @@ export class Panel {
       el('div', { class: 'layout' }, side, main),
       el('footer', {},
         el('div', { class: 'summary' },
-          el('b', {}, nf(n)), ' ticked · ',
-          el('span', { class: 'muted' }, 'the extension ticks, you decide to delete')),
-        el('button', {
-          class: 'action primary',
-          text: `Tick in Google Photos${n ? ` (${nf(n)})` : ''}`,
-          disabled: !!this.state.busy || !n,
-          onclick: () => { this.closeModal(); this.startSelect(); }
-        }))
-    );
+          (this.modalTicked = el('b', {}, '0')),
+          ' ticked · ',
+          el('span', { class: 'muted' }, 'the bin keeps them 60 days')),
+        put(el('div', { class: 'buttons' }),
+          (this.modalTickButton = el('button', {
+            class: 'action',
+            text: 'Tick in Photos',
+            title: 'Tick the selection in Google Photos and leave the deleting to you',
+            onclick: () => { this.closeModal(); this.startSelect(); }
+          })),
+          (this.modalBinButton = el('button', {
+            class: 'action primary danger',
+            // Closed first: the confirmation belongs in the panel, where the
+            // log of what happened is, and a full-screen grid over it would
+            // hide both.
+            onclick: () => { this.closeModal(); this.state.tab = 'sort'; this.confirmTrash(); }
+          })))));
+
+    // Filled in place, and repainted on every tick: ticking a thumbnail must
+    // not rebuild the grid it was ticked in.
+    this.paintActions();
   }
 
   /** Tickable thumbnail, shared by the side preview and the modal. */
@@ -778,6 +873,11 @@ export class Panel {
   }
 
   recompute() {
+    // A pending confirmation quotes a count and a size taken from the selection
+    // as it was. Anything that recomputes the selection invalidates it, and a
+    // confirmation that no longer matches what it will do is the one thing this
+    // dialog must never be.
+    this.state.confirmTrash = null;
     this.syncBlockedCriteria();
     const dup = this.duplicateSelection();
     this.state.counts = countPerCriterion(this.state.items, this.state.filters, dup.selectable);
@@ -824,26 +924,137 @@ export class Panel {
     this.renderModal();
   }
 
+  /**
+   * How much of the job is done — the whole job, not one stage of it.
+   *
+   * A run has two stages over the same library: measure every thumbnail, then
+   * read faces in the ones that contain a person. Counting only the first made
+   * the ring read 100% while the face pass still had thousands of photos to
+   * go, which is the one thing a completion figure must never do.
+   *
+   * So both stages count, weighted by the number of photos each actually
+   * covers. The face stage is a subset of the library, and its weight reflects
+   * that: a library with no faces in it reaches 100% on measurement alone,
+   * which is correct.
+   */
+  progressSummary() {
+    const items = this.state.items;
+    const total = items.length;
+    let analysed = 0;
+    let pending = 0;
+    for (const it of items) {
+      if (it.analyzed) analysed++;
+      else if (it.url) pending++;
+    }
+
+    // While the pass runs, its own counters are authoritative and free. Idle,
+    // they are derived from the catalogue.
+    let faceTotal = 0;
+    let faceDone = 0;
+    if (this.state.settings.scanPeople) {
+      if (this.liveFaces) {
+        faceTotal = this.liveFaces.total;
+        faceDone = this.liveFaces.done;
+      } else {
+        faceTotal = peopleCandidates(items).length;
+        faceDone = faceTotal - pendingPeople(items).length;
+      }
+    }
+
+    const done = analysed + faceDone;
+    const work = total + faceTotal;
+    return {
+      total,
+      analysed,
+      pending,
+      faceTotal,
+      faceDone,
+      facePending: Math.max(0, faceTotal - faceDone),
+      ratio: work ? done / work : 0,
+      complete: work > 0 && pending === 0 && faceDone >= faceTotal
+    };
+  }
+
+  /**
+   * Repaint progress without rebuilding anything.
+   *
+   * The face pass used to call `renderScan()` on every batch, which does
+   * `replaceChildren()` on the whole tab several times a second: the panel
+   * appeared to reload in a loop, animations restarted, and — worse — the log
+   * elements the running job was writing into were replaced by new ones, so
+   * its output silently went to detached nodes.
+   *
+   * Nothing about the tab's *contents* changes while a pass runs. Only a few
+   * numbers do, and this writes those numbers where they already are. Same
+   * reasoning as `paintSelection` for the grid.
+   */
+  paintProgress() {
+    const s = this.progressSummary();
+
+    if (this.ringFill) {
+      this.ringFill.setAttribute('stroke-dashoffset', (this.ringC * (1 - s.ratio)).toFixed(1));
+    }
+    if (this.ringValue) this.ringValue.textContent = `${Math.round(s.ratio * 100)}%`;
+    if (this.ringLabel) this.ringLabel.textContent = s.complete ? 'done' : 'analysed';
+
+    if (this.peopleBar) {
+      this.peopleBar.style.width = s.faceTotal
+        ? `${Math.round((s.faceDone / s.faceTotal) * 100)}%`
+        : '0%';
+    }
+    if (this.peopleLabel && this.liveFaces) {
+      this.peopleLabel.textContent =
+        `${nf(this.liveFaces.done)} / ${nf(this.liveFaces.total)} read · ${nf(this.liveFaces.faces)} face(s)`;
+    }
+    this.paintRunStatus(s);
+  }
+
+  /**
+   * The badge line during a run.
+   *
+   * One line for the whole run rather than one per stage, because the stages
+   * overlap and the badge is often the only thing visible: listing and
+   * analysis run together, and the face pass follows on the same button press.
+   * A badge that stopped mentioning a stage would read as that stage having
+   * failed.
+   */
+  paintRunStatus(summary = null) {
+    const c = this.runCounts;
+    if (!c) return;
+    const parts = [`Listing ${nf(c.listed)}`, `Analysing ${nf(c.analysed)}`];
+    if (c.facesTotal) parts.push(`Faces ${nf(c.facesDone)}/${nf(c.facesTotal)}`);
+    const s = summary || this.progressSummary();
+    this.setStatus({
+      label: parts.join(' · '),
+      // Quantified only once the library size is known: a denominator that
+      // still moves would make the bar go backwards, which reads as a
+      // regression rather than as progress.
+      ratio: c.listingDone ? s.ratio : null
+    });
+  }
+
   /* ------------------------------------------------------------ onglet 1 */
 
   renderScan() {
     const t = this.tabs.scan;
     t.replaceChildren();
 
-    const total = this.state.items.length;
-    const analyzed = this.state.items.filter((i) => i.analyzed).length;
-    const failed = this.state.items.filter((i) => i.analysisError).length;
-    const noThumb = this.state.items.filter((i) => !i.analyzed && !i.url).length;
+    const progress = this.progressSummary();
+    const total = progress.total;
+    const analyzed = progress.analysed;
     // Must mirror exactly what `getPending` returns: a failed item is still
     // pending (network errors are often transient), an item with no thumbnail
     // never will be. Counting otherwise shows work that does not exist, or
     // disables the button while work remains.
-    const pending = this.state.items.filter((i) => !i.analyzed && i.url).length;
+    const pending = progress.pending;
+    const failed = this.state.items.filter((i) => i.analysisError).length;
+    const noThumb = this.state.items.filter((i) => !i.analyzed && !i.url).length;
 
     put(
 
       t,
-      this.buildHero(total, analyzed, pending),
+      this.buildContextBanner(),
+      this.buildHero(progress),
       this.buildModelNote(),
       el(
         'section',
@@ -860,15 +1071,19 @@ export class Panel {
         // arithmetic. Leaving it out of the status made it look as though
         // nothing had happened, which is how it went unnoticed twice.
         this.buildPeopleStatus(),
+        this.buildStorageLine(),
         failed
           ? el('div', { class: 'muted', style: 'margin-top:8px' },
               `${nf(failed)} thumbnail(s) failed, usually expired URLs. They are retried on the next run.`)
           : null,
-        this.buildNoThumbAlert(total, analyzed, pending, noThumb)
+        this.buildLegacyThumbNote(noThumb)
       )
     );
 
-    const running = this.state.busy === 'full';
+    // A standalone face pass is just as long as a full run, and just as
+    // stoppable. Leaving the button disabled during it meant the only way out
+    // was to reload the page.
+    const running = this.state.busy === 'full' || this.state.busy === 'people';
 
     this.scanBar = el('i');
     this.scanLog = el('div', { class: 'log' });
@@ -886,13 +1101,11 @@ export class Panel {
           'div',
           { class: 'card' },
           el('div', { class: 'muted' },
-            `Lists your library and measures each thumbnail at ${this.state.settings.thumbSize}px. Nothing is modified. Stop any time — progress is kept.`),
-          el('div', { class: 'muted', style: 'margin-top:6px' },
-            'Keep this tab in front.'),
+            `Lists your library through the Google Photos API and measures each thumbnail at ${this.state.settings.thumbSize}px. Stop any time — progress is kept.`),
 
           this.buildSinceControl(),
           this.buildLimitControl(),
-          this.buildZoomControl(),
+          this.buildSizeOption(),
           this.buildPeopleOption(),
           this.buildPlanNote(pending),
           this.buildResumeNote(),
@@ -900,12 +1113,16 @@ export class Panel {
           el(
             'div',
             { class: 'row', style: 'margin-top:12px' },
-            el('button', {
+            (this.runButton = el('button', {
               class: 'action primary',
-              text: running ? 'Stop' : this.runLabel(pending),
-              disabled: !!this.state.busy && !running,
+              text: running ? (this.aborting ? 'Stopping…' : 'Stop') : this.runLabel(pending),
+              // A dead bridge means the analysis engine is unreachable: the
+              // run would start, fail on its first batch, and report an error
+              // that says nothing about the actual cause.
+              disabled: this.state.contextLost || (running && this.aborting)
+                || (!!this.state.busy && !running),
               onclick: () => (running ? this.abortAll() : this.startFullRun())
-            }),
+            })),
             el('span', { class: 'spacer' }),
             this.state.cursor && !running
               ? el('button', {
@@ -959,29 +1176,33 @@ export class Panel {
    * milestones that light up give a handle on progress — without inventing
    * anything: every number shown is a real count from the catalogue.
    */
-  buildHero(total, analyzed, pending) {
-    const ratio = total ? analyzed / total : 0;
-    const complet = total > 0 && pending === 0;
-
+  buildHero(s) {
     let titre;
     let sous;
-    if (!total) {
+    if (!s.total) {
       titre = 'Ready to explore';
-      sous = 'Run the analysis: the extension walks your library and measures every thumbnail. Nothing is modified.';
-    } else if (pending) {
-      titre = `${nf(pending)} pending`;
-      sous = `${nf(analyzed)} of ${nf(total)} thumbnails measured. Run again to carry on where you left off.`;
+      sous = 'Run the analysis: the extension lists your library and measures every thumbnail. Nothing is modified.';
+    } else if (s.pending) {
+      titre = `${nf(s.pending)} pending`;
+      sous = `${nf(s.analysed)} of ${nf(s.total)} thumbnails measured. Run again to carry on where you left off.`;
+    } else if (s.facePending) {
+      // Measurement is finished but identity is not, and saying "analysed"
+      // here would contradict the ring beside it.
+      titre = `${nf(s.facePending)} still to read`;
+      sous = `${nf(s.total)} thumbnails measured. Faces are being read in the ${nf(s.faceTotal)} photo(s) that contain one.`;
     } else {
       titre = 'Library analysed';
-      sous = `${nf(total)} items measured. Head to the Sort tab to clean up.`;
+      sous = `${nf(s.total)} items measured. Head to the Sort tab to clean up.`;
     }
 
+    this.heroTitle = el('div', { class: 'hero-title' }, titre);
+    this.heroSub = el('div', { class: 'hero-sub' }, sous);
     return el('div', { class: 'hero' },
-      this.buildRing(ratio, complet),
+      this.buildRing(s.ratio, s.complete),
       el('div', { class: 'hero-side' },
-        el('div', { class: 'hero-title' }, titre),
-        el('div', { class: 'hero-sub' }, sous),
-        this.buildMilestones(total, analyzed, complet)));
+        this.heroTitle,
+        this.heroSub,
+        this.buildMilestones(s.total, s.analysed, s.complete)));
   }
 
   /**
@@ -1008,11 +1229,16 @@ export class Panel {
       `<circle class="fill" cx="48" cy="48" r="${R}" stroke="url(#${gradId})" ` +
       `stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(C * (1 - ratio)).toFixed(1)}"/>`;
 
+    // Kept so progress can be repainted in place: rebuilding this SVG several
+    // times a second is what made the panel look like it was reloading.
+    this.ringC = C;
+    this.ringFill = svg.querySelector('.fill');
+    this.ringValue = el('div', { class: 'ring-value' }, `${Math.round(ratio * 100)}%`);
+    this.ringLabel = el('div', { class: 'ring-label' }, complet ? 'done' : 'analysed');
+
     return el('div', { class: 'ring' },
       svg,
-      el('div', { class: 'center' },
-        el('div', { class: 'ring-value' }, `${Math.round(ratio * 100)}%`),
-        el('div', { class: 'ring-label' }, complet ? 'done' : 'analysed')));
+      el('div', { class: 'center' }, this.ringValue, this.ringLabel));
   }
 
   /**
@@ -1042,87 +1268,90 @@ export class Panel {
   }
 
   /**
-   * Loudly flag "items listed, but nothing to analyse".
+   * Items with no thumbnail, left behind by the old scroll-based listing.
    *
-   * This is the extension's most treacherous failure: no error is raised, the
-   * engine answers normally, the queue is simply empty — and analysis stays at
-   * zero with no explanation. It typically happens when Google changes the host
-   * serving thumbnails, which the observed-hosts report answers directly.
+   * The API never produces them: it returns the thumbnail URL with the item, so
+   * either both arrive or neither does. What is left is a catalogue built by an
+   * earlier version, where tiles were read before their images had loaded.
    */
-  buildNoThumbAlert(total, analyzed, pending, noThumb) {
-    if (!total || !noThumb) return null;
-    const bloquant = pending === 0 && analyzed === 0;
+  buildLegacyThumbNote(noThumb) {
+    if (!noThumb) return null;
+    return el('div', { class: 'banner warn', style: 'margin-top:10px' },
+      el('b', {}, `${nf(noThumb)} item(s) with no thumbnail, from an earlier version. `),
+      'They were listed before their image had loaded, which the API listing no longer does. ',
+      el('div', { class: 'row', style: 'margin-top:8px' },
+        el('button', {
+          class: 'action',
+          text: 'Forget them',
+          title: 'Remove them from the catalogue; the next run lists them properly',
+          disabled: !!this.state.busy,
+          onclick: () => this.dropUnusableItems()
+        })));
+  }
 
-    const box = el('div', { class: `banner ${bloquant ? 'danger' : 'warn'}`, style: 'margin-top:10px' });
-    box.append(
-      el('b', {}, bloquant
-        ? 'No usable thumbnails: analysis has nothing to work on.'
-        : `${nf(noThumb)} item(s) left over from an earlier version.`),
-      el('br'),
-      bloquant
-        ? 'Items were listed, but no image URL could be extracted. Either scrolling outran image loading, or Google changed the host serving them.'
-        : 'They were recorded without their image, which no longer happens. The next run collects them.'
-    );
+  /**
+   * Drop catalogue entries nothing can ever use.
+   *
+   * Only the local record goes — these are rows that were never analysable, and
+   * the next run re-lists the same photos with their URLs. Nothing on Google's
+   * side is touched, which is why this needs no confirmation.
+   */
+  async dropUnusableItems() {
+    const ids = this.state.items.filter((i) => !i.url).map((i) => i.id);
+    if (!ids.length) return;
+    await db.deleteItems(ids);
+    await this.reload();
+    this.flashStatus(`${nf(ids.length)} unusable entr(ies) removed`);
+    this.renderAll();
+  }
 
-    // The coverage reached is the number that says whether waiting longer would
-    // have helped or whether the images were never coming.
-    if (this.state.settings.lastRunStarved) {
-      box.append(el('div', { class: 'banner danger', style: 'margin-top:8px' },
-        el('b', {}, 'Google Photos served the grid without images. '),
-        'The tiles appeared, the pictures never did. That is on their side: '
-        + 'open photos.google.com yourself and check the grid actually fills in '
-        + 'before running again.'));
+  /**
+   * What the library costs, once the size pass has said so.
+   *
+   * Deleting photos is about storage, and until now the extension could not
+   * name a single byte — the grid does not carry sizes. The figure is stated
+   * with the count it covers, because a total over a fifth of the catalogue is
+   * a different claim from a total over all of it.
+   */
+  buildStorageLine() {
+    const total = this.state.items.length;
+    if (!total) return null;
+    let bytes = 0;
+    let sized = 0;
+    for (const it of this.state.items) {
+      const b = itemBytes(it);
+      if (b) { bytes += b; sized++; }
     }
-
-    const ratio = this.state.settings.lastThumbRatio;
-    if (ratio != null) {
-      box.append(el('div', { class: 'muted tiny' },
-        `Last run: ${Math.round(ratio * 100)}% of visible thumbnails were ready when harvesting.`));
+    if (!sized) {
+      return this.state.settings.scanSizes
+        ? null
+        : el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+            'File sizes are off, so nothing here can be sorted or filtered by weight.');
     }
+    return el('div', { class: 'muted', style: 'margin-top:8px' },
+      el('b', {}, formatBytes(bytes)),
+      sized === total
+        ? ' across the catalogue.'
+        : ` across ${nf(sized)} of ${nf(total)} items — the rest have not been measured.`);
+  }
 
-    // Separate what will be retried automatically from what is permanently
-    // lost: promising a recovery that will not happen is worse than silence.
-    const reprenables = this.state.items.filter(
-      (i) => !i.analyzed && !i.url && (i.thumbAttempts || 0) < MAX_THUMB_ATTEMPTS
-    ).length;
-    const abandonnes = noThumb - reprenables;
-
-    if (reprenables) {
-      const auto = this.state.settings.autoRepairThumbs;
-      const limite = this.state.settings.autoRepairLimit || 500;
-      box.append(el('div', { style: 'margin-top:8px' },
-        auto && reprenables <= limite
-          ? [el('b', {}, `${nf(reprenables)} will be retried automatically`),
-             ' at the end of the next run: each is brought back on screen, its image awaited, then analysed.']
-          : [el('b', {}, `${nf(reprenables)} to recover`),
-             ' — the next run starts from the top to collect them.']));
-    }
-
-    if (abandonnes > 0) {
-      box.append(el('div', { class: 'muted', style: 'margin-top:6px' },
-        `${nf(abandonnes)} item(s) still have no preview after ${MAX_THUMB_ATTEMPTS} attempts and will not be retried — usually videos still processing at Google.`));
-    }
-
-    box.append(el('div', { class: 'muted', style: 'margin-top:6px' },
-      'If it repeats, raise ',
-      el('b', {}, 'Thumbnail wait'),
-      ' in Settings → Speed, or reduce the scroll step.'));
-
-    // The image-host report only makes sense in this exact case, so it is
-    // measured on demand here rather than in a permanent diagnostics panel
-    // nobody opens at the right moment.
-    if (bloquant) {
-      const hosts = dom.observedThumbHosts();
-      const entrees = Object.entries(hosts);
-      if (entrees.length) {
-        box.append(
-          el('div', { style: 'margin-top:8px' }, 'Hosts observed on tiles:'),
-          el('div', { style: 'margin-top:3px' },
-            entrees.map(([h, n]) => el('div', {}, el('code', {}, `${h} × ${n}`))))
-        );
-      }
-    }
-    return box;
+  /**
+   * Whether the run also asks for file names and sizes.
+   *
+   * One extra request per two hundred items, and the only source of a figure
+   * the grid never had. Off is a legitimate choice on a very large library,
+   * where it is the difference between one request per page and four.
+   */
+  buildSizeOption() {
+    const s = this.state.settings;
+    return el('div', { class: 'card', style: 'margin-top:10px' },
+      el('label', { class: 'switch' },
+        el('input', {
+          type: 'checkbox', checked: s.scanSizes, disabled: !!this.state.busy,
+          onchange: (e) => { s.scanSizes = e.target.checked; this.persist(); this.renderAll(); }
+        }),
+        el('span', {}, 'Also fetch file names and sizes'),
+        el('small', {}, 'one extra request per 200 items; unlocks the size filter and order')));
   }
 
   runLabel(pending) {
@@ -1131,6 +1360,9 @@ export class Panel {
     if (!this.state.settings.resumeScan || !this.state.cursor) return `Analyse my library${suffix}`;
     if (this.state.cursor.reachedEnd) {
       return pending ? `Resume · ${nf(pending)} pending` : `Check for new photos${suffix}`;
+    }
+    if (this.state.cursor.olderThanTs !== (this.state.settings.scanOlderThanTs ?? null)) {
+      return `Analyse my library${suffix}`;
     }
     return `Resume${pending ? ` · ${nf(pending)} pending` : suffix}`;
   }
@@ -1257,37 +1489,42 @@ export class Panel {
     return wrap;
   }
 
-  /** Explain where the next scan will resume, and why. */
+  /**
+   * Explain where the next run will resume, and why.
+   *
+   * The position is a date now, not a scroll offset — the API is asked for
+   * everything taken before a given instant. That makes it something a person
+   * can check: if it does not match where they think they got to, the cursor is
+   * wrong and "Start over" is right there.
+   */
   buildResumeNote() {
     const c = this.state.cursor;
     if (!this.state.settings.resumeScan) {
       return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
-        'Resume off: always restarts from the top.');
+        'Resume off: always restarts from the newest photo.');
     }
     if (!c) return null;
 
-    // Items missing a thumbnail sit behind the cursor, so a resumed pass never
-    // reaches them. Above a certain backlog the scanner ignores the cursor —
-    // say so here rather than letting the resume note contradict what happens.
-    const backlog = this.state.items.filter((i) => !i.analyzed && !i.url).length;
-    if (backlog >= 200) {
-      return el('div', { class: 'banner warn', style: 'margin:10px 0 0' },
-        el('b', {}, `${nf(backlog)} item(s) still need their thumbnail. `),
-        'The next run starts from the top to collect them, rather than resuming.');
+    // A window change makes the stored position meaningless: it answers a
+    // different question. Saying so beats silently restarting.
+    const window = this.state.settings.scanOlderThanTs ?? null;
+    if ((c.olderThanTs ?? null) !== window) {
+      return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
+        el('b', {}, 'The date window changed. '),
+        'The saved position belongs to the previous one, so this run starts fresh.');
     }
 
     if (c.reachedEnd) {
       return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
-        el('b', {}, 'Whole library walked. '),
-        'Next run restarts from the top, to catch new photos.');
+        el('b', {}, 'Whole library listed. '),
+        'The next run checks the top for new photos.');
     }
 
-    const pos = c.scrollHeight ? Math.round((c.scrollTop / c.scrollHeight) * 100) : null;
     return el('div', { class: 'banner info', style: 'margin:10px 0 0' },
-      el('b', {}, `Resuming${pos != null ? ` around ${pos}%` : ''} through the library. `),
-      `${nf(c.known || 0)} already known. `,
-      el('span', { class: 'muted' },
-        ''));
+      el('b', {}, c.lastTimestamp
+        ? `Resuming at ${formatDate(c.lastTimestamp)}. `
+        : 'Resuming where listing stopped. '),
+      `${nf(c.known || 0)} already known.`);
   }
 
 
@@ -1308,6 +1545,7 @@ export class Panel {
 
     put(
       t,
+      this.buildContextBanner(),
       this.buildCleanupScore(),
       analyzed
         ? null
@@ -1364,84 +1602,6 @@ export class Panel {
   }
 
   /**
-   * Say where listing spent its waiting, and what that implies.
-   *
-   * The two waits respond to opposite fixes, so summing them would hide the
-   * only thing worth knowing. Settling the grid costs the same whatever is on
-   * screen, so a wider viewport divides it. Waiting for images costs the same
-   * per image, so a wider viewport just waits for more of them at once and
-   * changes nothing. Reporting the split turns "try zooming out" from a guess
-   * into a decision.
-   */
-  describeWaits(r) {
-    const settle = r.waitMs || 0;
-    const thumbs = r.thumbWaitMs || 0;
-    const total = settle + thumbs;
-    if (!total) return 'No measurable waiting while listing.';
-
-    const pct = (v) => `${Math.round((v / total) * 100)}%`;
-    const advice = settle > thumbs
-      ? 'Zooming out would cut the larger share.'
-      : 'Zooming out would not help; raise Thumbnail wait instead.';
-    return `Waited ${dur(Math.round(total / 1000))}: ${pct(settle)} on the grid, ${pct(thumbs)} on images. ${advice}`;
-  }
-
-  /**
-   * Page zoom while listing.
-   *
-   * Google Photos renders exactly what fits the viewport and nothing beyond it,
-   * so a smaller zoom means more tiles per screen and proportionally fewer
-   * stops — and a stop costs a fixed settle wait, which is what makes listing
-   * slow. The panel counter-scales, so it stays the size it is now.
-   *
-   * Off by default: it changes what the user's own tab looks like for the
-   * duration, and that should be asked for rather than assumed.
-   */
-  buildZoomControl() {
-    const s = this.state.settings;
-    const busy = !!this.state.busy;
-    const row = el('div', { class: 'sorts', style: 'margin-top:6px' });
-
-    for (const step of ZOOM_STEPS) {
-      row.append(el('button', {
-        class: `sort${s.scanZoom === step.factor ? ' on' : ''}`,
-        text: step.label,
-        disabled: busy,
-        title: step.factor === 1
-          ? 'Leave the page alone'
-          : `Smaller page, about ${Math.round(1 / (step.factor * step.factor))}x the tiles per screen`
-            + (step.factor === MIN_FACTOR ? " — Chrome's smallest" : ''),
-        onclick: () => { s.scanZoom = step.factor; this.persist(); this.renderAll(); }
-      }));
-    }
-
-    const measured = this.state.settings.lastTilesPerStep;
-    const split = this.state.settings.lastWaitSplit;
-    // Whether this setting is worth turning on is a measured question, so the
-    // last run's answer sits next to the buttons rather than in a log.
-    let verdict = null;
-    if (split && (split.settle + split.thumbs) > 0) {
-      const total = split.settle + split.thumbs;
-      const share = Math.round((split.settle / total) * 100);
-      verdict = share > 50
-        ? `Last run: ${share}% of its waiting on the grid — the part this divides.`
-        : `Last run: ${100 - share}% of its waiting on images, which this will not change.`;
-    }
-
-    return el('div', { style: 'margin-top:12px' },
-      el('div', { class: 'muted' }, 'Page size while listing (smaller fits more):'),
-      row,
-      el('div', { class: 'muted tiny' },
-        s.scanZoom < 1
-          ? 'More thumbnails per screen. This panel keeps its size; the zoom is restored afterwards.'
-          : 'One stop per screenful, each waiting for the grid.'),
-      measured
-        ? el('div', { class: 'muted tiny', text: `Last run listed ${nf(Math.round(measured))} item(s) per stop.` })
-        : null,
-      verdict ? el('div', { class: 'muted tiny', text: verdict }) : null);
-  }
-
-  /**
    * Face-pass counters, beside the analysis ones.
    *
    * It reads a subset — only photos the analysis found a face in — so its
@@ -1484,10 +1644,12 @@ export class Panel {
     const p = this.state.people;
     const busy = !!this.state.busy;
 
+    // Held rather than rebuilt, so the pass can move them without touching the
+    // rest of the tab.
+    this.peopleBar = el('i', { style: `width:${pct(p.progress ? p.progress.ratio : 0)}` });
+    this.peopleLabel = el('div', { class: 'muted tiny', text: p.progress ? p.progress.label : '' });
     const bar = p.progress
-      ? el('div', {},
-          el('div', { class: 'progress' }, el('i', { style: `width:${pct(p.progress.ratio)}` })),
-          el('div', { class: 'muted tiny', text: p.progress.label }))
+      ? el('div', {}, el('div', { class: 'progress' }, this.peopleBar), this.peopleLabel)
       : null;
 
     // Photos analysed before the switch was turned on would otherwise wait for
@@ -1557,17 +1719,23 @@ export class Panel {
     const f = this.state.filters;
     const row = el('div', { class: 'sorts' });
 
+    const anySized = this.state.items.some((i) => itemBytes(i) > 0);
+
     for (const key of SORT_KEYS) {
       const sort = SORTS[key];
-      // "Rarest people" ranks by how often each face appears elsewhere, which
-      // is meaningless until the People pass has produced groups. Shown and
-      // disabled rather than hidden: a button that vanishes reads as a bug.
-      const blocked = sort.needsPeople && !this.state.people.groups.length;
+      // Two orders rank by something a pass has to produce first. Shown and
+      // disabled rather than hidden: a button that vanishes reads as a bug, and
+      // the reason it is off is the useful part.
+      const reason = sort.needsPeople && !this.state.people.groups.length
+        ? 'Needs people: run the analysis with grouping switched on.'
+        : sort.needsSizes && !anySized
+          ? 'Needs file sizes: run the analysis with "fetch file names and sizes" switched on.'
+          : null;
       row.append(el('button', {
         class: `sort${f.sort === key ? ' on' : ''}`,
         text: sort.label,
-        disabled: blocked,
-        title: blocked ? 'Needs people: run the analysis with grouping switched on.' : sort.hint,
+        disabled: !!reason,
+        title: reason || sort.hint,
         onclick: () => { f.sort = key; this.onFilterChange(); }
       }));
     }
@@ -1817,6 +1985,7 @@ export class Panel {
     const coches = nf(this.state.selection.size);
     if (this.modalCount) this.modalCount.textContent = this.countsLabel();
     if (this.footerSummary) this.footerSummary.replaceChildren(el('b', {}, coches), ' item(s) ticked');
+    this.paintActions();
   }
 
   onFilterChange() {
@@ -1903,6 +2072,30 @@ export class Panel {
    * "matching" is a claim about criteria. With none on, the grid is simply the
    * library, and calling that a match would suggest a judgement nobody made.
    */
+  /**
+   * Update whatever the size of the selection decides.
+   *
+   * The full-screen view is where ticking actually happens — that is the whole
+   * point of it — and its footer carries both actions. It was the one thing a
+   * tick did not repaint, so it sat at "0 ticked" with both buttons greyed
+   * however many photos were selected, and the only way to wake it was a
+   * filter change. Rebuilding the modal instead would throw away the scroll
+   * position of the grid being worked through.
+   */
+  paintActions() {
+    const n = this.state.selection.size;
+    const blocked = !!this.state.busy || !n;
+
+    // Text into nodes that already exist, never new nodes: this runs on every
+    // click in a grid of hundreds.
+    if (this.modalTicked) this.modalTicked.textContent = nf(n);
+    if (this.modalTickButton) this.modalTickButton.disabled = blocked;
+    if (this.modalBinButton) {
+      this.modalBinButton.disabled = blocked;
+      this.modalBinButton.textContent = `Move to bin${n ? ` (${nf(n)})` : ''}`;
+    }
+  }
+
   countsLabel() {
     const total = nf(this.state.filtered.length);
     const ticked = nf(this.state.selection.size);
@@ -1988,7 +2181,10 @@ export class Panel {
   /* ---------------------------------------------------- people actions */
 
   send(message) {
-    return chrome.runtime.sendMessage(message);
+    return sendMessage(message).catch((err) => {
+      this.noteContext(err);
+      throw err;
+    });
   }
 
   /**
@@ -2083,7 +2279,11 @@ export class Panel {
     const todo = pendingPeople(this.state.items);
     if (!todo.length) return 0;
 
-    if (!inline) this.state.busy = 'people';
+    if (!inline) {
+      this.state.busy = 'people';
+      this.aborting = false;
+      this.runAbort = new AbortController();
+    }
 
     // Fetched here rather than behind a button: the switch above is the
     // consent, and asking twice for the same decision only strands people who
@@ -2096,35 +2296,66 @@ export class Panel {
     }
 
     p.error = null;
-    p.progress = { ratio: 0, label: `0 / ${nf(todo.length)}` };
+    p.progress = { ratio: 0, label: `0 / ${nf(todo.length)} read` };
+    // The face stage now counts towards the completion figure, so its size has
+    // to be known before the first repaint — otherwise the ring would jump
+    // backwards the moment the pass starts.
+    this.liveFaces = { done: 0, total: todo.length, faces: 0 };
+    if (this.runCounts) {
+      this.runCounts.facesTotal = todo.length;
+      this.runCounts.facesDone = 0;
+    }
     if (log) this.log(log, `Reading faces in ${nf(todo.length)} photo(s)…`);
     this.renderAll();
 
     const totals = await scanFaces(todo, {
+      // Without this the pass ignored Stop entirely — and it is the longest
+      // stage of a run, so it was the one people actually wanted to stop.
+      signal: this.runAbort?.signal,
+      // The same lever as the analysis: this pass is bound by the same link.
+      inflight: this.state.settings.analyzeInflight,
       send: (m) => this.send(m),
       save: (results, ids) => this.saveFaces(results, ids),
       onProgress: ({ done, total, faces }) => {
-        p.progress = { ratio: total ? done / total : 1, label: `${nf(done)} / ${nf(total)} · ${nf(faces)} face(s)` };
+        this.liveFaces = { done, total, faces };
+        p.progress = {
+          ratio: total ? done / total : 1,
+          label: `${nf(done)} / ${nf(total)} read · ${nf(faces)} face(s)`
+        };
+        if (this.runCounts) {
+          this.runCounts.facesDone = done;
+          this.runCounts.facesTotal = total;
+        }
         if (log) {
           log.firstElementChild?.remove();
           this.log(log, `Faces · ${nf(done)} / ${nf(total)} · ${nf(faces)} found`);
         }
-        // Progress belongs to the Analyse tab now; repaint only that.
-        this.renderScan();
+        // Repainted in place. Re-rendering the tab here rebuilt every node in
+        // it several times a second — the panel looked like it was reloading
+        // in a loop, and the log this run writes into was replaced mid-run.
+        this.paintProgress();
       }
     });
 
     if (totals.errors.length) p.error = totals.errors[0];
-    if (!inline) this.state.busy = null;
+    const stopped = this.aborting;
+    if (!inline) {
+      this.state.busy = null;
+      this.runAbort = null;
+      this.aborting = false;
+    }
     p.progress = null;
+    this.liveFaces = null;
+
+    const summary = `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)`
+      + (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '');
     if (log) {
-      this.log(log, `Faces done: ${nf(totals.faces)} in ${nf(totals.scanned)} photo(s)` +
-        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : ''), 'ok');
+      // What was read is kept and grouped either way: a stopped pass is
+      // partial work, not wasted work, and the next run picks up the rest.
+      this.log(log, stopped ? `Faces stopped: ${summary}` : `Faces done: ${summary}`,
+        stopped ? '' : 'ok');
     } else {
-      this.flashStatus(
-        `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)` +
-        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '')
-      );
+      this.flashStatus(stopped ? `Stopped · ${summary}` : summary, stopped ? null : 'done', 5000);
     }
     await this.reload();
     await this.rebuildGroups({ quiet: inline });
@@ -2231,7 +2462,7 @@ export class Panel {
     const named = this.state.people.groups
       .filter((g) => g.name)
       .map((g) => ({ name: g.name, centroid: g.centroid }));
-    chrome.storage.local.set({ [PEOPLE_KEY]: named }).catch(() => {});
+    storageSet({ [PEOPLE_KEY]: named }).catch((err) => this.noteContext(err));
   }
 
 
@@ -2254,7 +2485,14 @@ export class Panel {
         el('div', { class: 'kpis' },
           kpi(nf(s.total), 'items'),
           kpi(nf(s.videos), 'videos'),
-          kpi(dur(Math.round(s.videoSeconds)), 'of footage'))),
+          kpi(dur(Math.round(s.videoSeconds)), 'of footage')),
+        s.sized
+          ? el('div', { class: 'kpis', style: 'margin-top:8px' },
+              kpi(formatBytes(s.bytes), 'storage'),
+              kpi(formatBytes(Math.round(s.bytes / s.sized)), 'per item'),
+              kpi(s.sized === s.total ? 'all' : nf(s.sized), 'measured',
+                s.sized === s.total ? 'good' : 'warn'))
+          : null),
       this.buildNoDateNote(s),
       el('section', {}, el('h2', {}, 'By year'), chart(s.byYear)),
       el('section', {}, el('h2', {}, 'By month (last 24)'), chart(s.byMonth.slice(-24))),
@@ -2275,41 +2513,22 @@ export class Panel {
   /**
    * Explain missing dates instead of merely counting them.
    *
-   * Every photo has a date: if the extension cannot read it, that is a defect
-   * in the extension, not a property of the library. Saying so plainly, and
-   * saying what to do, beats a dead-end observation.
+   * There should be none. The API returns the capture time with the item, so a
+   * dateless entry can only have come from the old grid reading, where the date
+   * was scraped from a tile label or inherited from a neighbour. Saying which
+   * beats a dead-end count.
    */
   buildNoDateNote(s) {
     if (!s.noDate) return null;
-    const carried = this.state.items.filter((i) => i.dateSource === 'carried').length;
+    const legacy = this.state.items.filter((i) => i.ts == null && i.dateSource !== 'api').length;
 
     return el('div', { class: 'banner warn' },
       el('b', {}, `${nf(s.noDate)} item(s) with no usable date`),
       ' — they are excluded from the time histograms.',
-      el('br'),
-      'Every photo does carry a date; the extension just did not find it. The grid is virtualised, so the group date header is sometimes recycled out of the page when the tile is read.',
-      carried
-        ? el('div', { class: 'muted', style: 'margin-top:6px' },
-            `${nf(carried)} other item(s) inherited their date from the neighbouring tile — the grid is chronological, so this is accurate to the day.`)
-        : null,
       el('div', { style: 'margin-top:7px' },
-        el('b', {}, 'Run the analysis again'),
-        ': neighbour carry-over and header continuity between passes recover most of them.'),
-      // On-demand report: the only information that lets us fix the parser if
-      // Google changed its label format.
-      el('div', { class: 'row', style: 'margin-top:8px' },
-        el('button', {
-          class: 'action', text: 'Show unreadable labels',
-          onclick: (e) => {
-            const d = dom.diagnose();
-            const zone = el('div', { style: 'margin-top:8px' },
-              d.labelsSansDate?.length
-                ? [el('div', { class: 'muted' }, 'Labels whose date could not be read:'),
-                   ...d.labelsSansDate.map((t) => el('div', { style: 'margin-top:2px' }, el('code', {}, t)))]
-                : el('div', { class: 'muted' }, 'Every tile currently on screen has a readable date — the affected items are elsewhere in the grid.'));
-            e.target.replaceWith(zone);
-          }
-        })));
+        legacy === s.noDate
+          ? 'All of them were listed by an earlier version, which read dates off the page. Listing them again through the API gives every one an exact capture time.'
+          : 'The API returns a capture time with each item, so this should not happen. If it persists after a fresh run, the response format has changed.'));
   }
 
   /* ------------------------------------------------------------ onglet 4 */
@@ -2334,7 +2553,7 @@ export class Panel {
       t,
       el('section', {}, el('h2', {}, 'Resume'),
         el('div', { class: 'card' },
-          el('div', { class: 'muted' }, 'On a large library, bounding each run lets you work in slices without ever starting over: the position reached is remembered.'),
+          el('div', { class: 'muted' }, 'On a large library, bounding each run lets you work in slices without ever starting over: the date reached is remembered.'),
           el('label', { class: 'switch', style: 'margin-top:10px' },
             el('input', {
               type: 'checkbox', checked: s.resumeScan,
@@ -2349,27 +2568,12 @@ export class Panel {
 
       el('section', {}, el('h2', {}, 'Speed'),
         el('div', { class: 'card' },
+          el('div', { class: 'muted' },
+            'Listing is a handful of requests now, so what remains to tune is the analysis of the thumbnails it returns.'),
           num('thumbSize', 'Thumbnail size', 96, 512, 16,
             'The dominant cost is transfer. 176px is enough — hashes and the sharp/blurry ordering are stable there. Beyond that you pay bytes without gaining discernment.'),
           num('analyzeInflight', 'Concurrent batches', 1, 8, 1,
-            'Analysis requests run in parallel. Raise it on a fast connection; lower it to ease a modest machine.'),
-          num('scanStepRatio', 'Scroll step', 0.4, 0.95, 0.01,
-            'Fraction of the viewport crossed per step. Higher is faster, but risks missing items if rendering lags.'),
-          num('scanSettleMaxMs', 'Max render wait (ms)', 200, 3000, 50,
-            'A ceiling only: the actual wait adapts to render time. Raise it if listing misses items.'),
-          num('thumbWaitMaxMs', 'Thumbnail wait (ms)', 0, 15000, 500,
-            'Google Photos shows tiles before their images. Without this wait, listing records items with no thumbnail, which can never be analysed. 0 disables it — not recommended.'),
-          el('div', { class: 'filter' },
-            el('label', { class: 'switch' },
-              el('input', {
-                type: 'checkbox', checked: s.autoRepairThumbs,
-                onchange: (e) => { s.autoRepairThumbs = e.target.checked; this.persist(); this.renderAll(); }
-              }),
-              el('span', {}, 'Recover missing thumbnails',
-                el('br'),
-                el('small', {}, `At the end of a run, brings items left without an image back on screen, then analyses them. Given up after ${MAX_THUMB_ATTEMPTS} attempts each.`))),
-            num('autoRepairLimit', 'Recovery threshold', 0, 5000, 50,
-              'Above this many items, one-by-one recovery is slower than a fresh pass over the grid, so the extension says so instead of attempting it.')))),
+            'How many batches are in flight at once, for the analysis and the face pass alike. Both are bound by the link to Google, which is almost all latency: measured, one thumbnail takes 122ms on its own and 13ms with sixteen outstanding. Raise it on a fast connection; lower it to ease a modest machine.'))),
 
       el('section', {}, el('h2', {}, 'Local data'),
         el('div', { class: 'card' },
@@ -2401,7 +2605,9 @@ export class Panel {
       el('section', {}, el('h2', {}, 'About'),
         el('div', { class: 'card' },
           el('div', { class: 'muted' },
-            'All analysis is local. Thumbnails are downloaded from Google, exactly as the page would, then processed in memory. Nothing is sent to a third party.')))
+            'All analysis is local. The library is listed through the same private API the Google Photos web app uses on itself, with your own session; thumbnails are downloaded exactly as the page would and processed in memory. Nothing is sent to a third party.'),
+          el('div', { class: 'muted', style: 'margin-top:8px' },
+            'The only thing this extension can remove is a move to the bin, which Google keeps for 60 days. There is no permanent-delete path in the code.')))
     );
   }
 
@@ -2420,7 +2626,7 @@ export class Panel {
     }
     try {
       await db.clearAll();
-      await chrome.storage.local.remove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
+      await storageRemove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
     } catch (err) {
       this.flashStatus(`Reset failed: ${err.message}`, 'error', 8000);
       this.renderAll();
@@ -2431,6 +2637,7 @@ export class Panel {
     this.state.filters = structuredClone(DEFAULT_FILTERS);
     this.state.people = { modelReady: false, groups: [], named: [], faceCount: 0, error: null, progress: null };
     this.state.selection = new Set();
+    this.state.confirmTrash = null;
     this.state.renderLimit = 300;
     this.state.tab = 'scan';
     this.dupCache = null;
@@ -2458,16 +2665,26 @@ export class Panel {
 
   /* ------------------------------------------------------------------ footer */
 
+  /**
+   * The footer, where the selection turns into an action.
+   *
+   * Two actions, deliberately unequal. The bin is primary: it is what the
+   * extension is for, and it is reversible for sixty days. Ticking is kept
+   * beside it because it leaves the final click to Google's own interface,
+   * which is the right choice for anyone who would rather see the selection in
+   * Photos before parting with it.
+   */
   renderFooter() {
     this.footer.replaceChildren();
     const n = this.state.selection.size;
-    const busy = this.state.busy === 'select';
+    const ticking = this.state.busy === 'select';
+    const binning = this.state.busy === 'trash';
 
     if (this.state.tab !== 'sort') {
       this.footer.append(el('div', { class: 'muted' },
         this.state.busy
           ? 'Working…'
-          : 'Use the Sort tab to choose what to tick.'));
+          : 'Use the Sort tab to choose what to remove.'));
       return;
     }
 
@@ -2476,23 +2693,36 @@ export class Panel {
     put(
       this.footer,
       this.footerSummary,
+      this.buildTrashConfirm(),
       el('div', { class: 'buttons' },
         el('button', {
-          class: busy ? 'action' : 'action primary',
-          text: busy ? 'Stop' : `Tick in Google Photos${n ? ` (${nf(n)})` : ''}`,
-          disabled: (!!this.state.busy && !busy) || (!n && !busy),
-          onclick: () => (busy ? this.selector?.abort() : this.startSelect())
+          class: binning ? 'action' : 'action primary',
+          text: binning ? 'Stop' : `Move to bin${n ? ` (${nf(n)})` : ''}`,
+          disabled: (!!this.state.busy && !binning) || (!n && !binning),
+          onclick: () => (binning ? this.trasher?.abort() : this.confirmTrash())
+        }),
+        el('button', {
+          class: 'action',
+          text: ticking ? 'Stop' : 'Tick in Photos',
+          title: 'Tick the selection in Google Photos and leave the deleting to you',
+          disabled: (!!this.state.busy && !ticking) || (!n && !ticking),
+          onclick: () => (ticking ? this.selector?.abort() : this.startSelect())
         })),
       el('div', { class: 'muted', style: 'margin-top:7px; font-size:11px' },
-        'Deleting stays in your hands: the extension ticks, you decide.'),
-      (this.selectLog = el('div', { class: 'log' }))
+        'The bin keeps photos for 60 days — nothing here deletes permanently.'),
+      // Reused, not replaced: this footer is rebuilt on every tick, and a
+      // running job holds a reference to the log it is writing into.
+      (this.selectLog ||= el('div', { class: 'log' }))
     );
   }
 
   /* ------------------------------------------------------------------ actions */
 
   log(target, message, cls = '') {
-    if (!target) return;
+    // A node replaced by a re-render is still a perfectly good object; writing
+    // into it just puts the message nowhere anyone can see. Dropping it beats
+    // pretending the run reported something.
+    if (!target || target.isConnected === false) return;
     target.prepend(el('div', { class: cls, text: message }));
     while (target.childElementCount > 40) target.lastElementChild.remove();
   }
@@ -2500,30 +2730,22 @@ export class Panel {
   /**
    * Listing and analysis run together.
    *
-   * The raw time saved is modest — listing is only a fraction of the total —
-   * but analysis starts on the first items found, so results fill in
-   * continuously instead of arriving after a long silence.
-   *
-   * Analysis is throttled while listing runs: both compete for the same link to
-   * Google, and starving the grid would slow listing down — the one stage that
-   * cannot be parallelised.
+   * They always did, but it used to be a compromise: listing drove the grid and
+   * analysis competed with it for the same connection, so analysis was
+   * throttled while a scroll was in progress. Nothing competes now — a page of
+   * five hundred items is one request — so both run at full speed and results
+   * appear while the listing is still going.
    */
   async startFullRun() {
     if (this.state.busy) return;
-    const factor = this.state.settings.scanZoom;
-    const { applied } = await withZoom(factor, {
-      host: this.host,
-      work: () => this.doFullRun()
-    });
-    if (factor > 0 && factor < 1 && applied == null) {
-      this.flashStatus('The browser refused to zoom; ran at normal size', 'error', 6000);
-    }
+    await this.doFullRun();
   }
 
   async doFullRun() {
     if (this.state.busy) return;
     this.state.busy = 'full';
     this.aborting = false;
+    this.runAbort = new AbortController();
     this.setStatus({ label: 'Starting engine…', ratio: null, tone: null });
     this.renderAll();
 
@@ -2533,35 +2755,31 @@ export class Panel {
     const anaLog = this.analyzeLog;
 
     const s = this.state.settings;
-    this.scanner = new Scanner({
-      stepRatio: s.scanStepRatio,
-      settleMaxMs: s.scanSettleMaxMs,
+    const limit = s.maxPerRun || Infinity;
+    this.scanner = new ApiScanner({
       thumbSize: s.thumbSize,
       resume: s.resumeScan,
-      maxNewItems: s.maxPerRun || Infinity,
+      maxNewItems: limit,
       olderThanTs: s.scanOlderThanTs || null,
-      waitForThumbs: (s.thumbWaitMaxMs ?? 5000) > 0,
-      thumbWaitMaxMs: s.thumbWaitMaxMs ?? 5000
+      withSizes: s.scanSizes
     });
     this.analyzer = new Analyzer({
-      inflightBatches: Math.max(1, Math.round(s.analyzeInflight / 3)),
-      maxPerPass: s.maxPerRun || Infinity
+      inflightBatches: s.analyzeInflight,
+      maxPerPass: limit
     });
 
     let scanDone = false;
-    let scanStats = { discovered: 0, known: 0 };
+    let scanStats = { discovered: 0, known: 0, pages: 0 };
     let anaStats = { done: 0, failed: 0, total: 0 };
 
+    // One record for the whole run, so the badge can name every stage at once
+    // and the face pass can keep it moving after listing has finished.
+    this.runCounts = { listed: 0, analysed: 0, facesDone: 0, facesTotal: 0, listingDone: false };
     const refreshBadge = () => {
-      this.setStatus({
-        label: scanStats.seeking
-          ? `Seeking older photos… ${nf(scanStats.skippedRecent || 0)} skipped`
-          : `Listing ${nf(scanStats.discovered)} · Analysing ${nf(anaStats.done)}`,
-        // While listing runs the denominator moves, and a bar that went
-        // backwards would read as a regression. Only quantify it once the
-        // total is known.
-        ratio: scanDone && anaStats.total ? (anaStats.done + anaStats.failed) / anaStats.total : null
-      });
+      this.runCounts.listed = scanStats.discovered || 0;
+      this.runCounts.analysed = anaStats.done || 0;
+      this.runCounts.listingDone = scanDone;
+      this.paintRunStatus();
     };
 
     try {
@@ -2580,21 +2798,25 @@ export class Panel {
         return;
       }
 
-      this.log(scanLog, 'Listing and analysis started together.');
+      this.log(scanLog, 'Asking Google Photos for your library…');
 
       let scanResult = null;
       let scanError = null;
       const scanTask = this.scanner
         .run((st) => {
           scanStats = st;
-          if (st.scrollHeight) {
-            scanBar.style.width = `${Math.min(1, (st.scrollTop + st.clientHeight) / st.scrollHeight) * 100}%`;
+          // The library size is unknown until the last page, so progress is
+          // measured against the run's own limit when there is one, and left
+          // indeterminate when there is not. Inventing a denominator would be
+          // the one thing worse than no bar.
+          if (Number.isFinite(limit)) {
+            scanBar.style.width = `${Math.min(1, st.discovered / limit) * 100}%`;
           }
           scanLog.firstElementChild?.remove();
-          const cov = Math.round((st.thumbRatio ?? 1) * 100);
-          this.log(scanLog, st.seeking
-            ? `Crossing recent photos… ${nf(st.skippedRecent)} skipped`
-            : `${nf(st.discovered)} items · round ${st.rounds} · ${cov}% thumbnails ready`);
+          this.log(scanLog,
+            `${nf(st.discovered)} new · page ${st.pages}`
+            + (st.skippedRecent ? ` · ${nf(st.skippedRecent)} too recent` : '')
+            + (st.alreadyKnown ? ` · ${nf(st.alreadyKnown)} already known` : ''));
           refreshBadge();
         })
         .then((r) => { scanResult = r; })
@@ -2604,7 +2826,7 @@ export class Panel {
           // analysis waits forever for items that will never come.
           scanDone = true;
           scanBar.style.width = '100%';
-          this.analyzer.setInflight(s.analyzeInflight);
+          refreshBadge();
         });
 
       const analyzeTask = this.analyzer
@@ -2622,51 +2844,36 @@ export class Panel {
       else if (scanResult) {
         this.log(scanLog, scanResult.limitReached
           ? `Run limit reached — ${nf(scanResult.discovered)} new items.`
-          : scanResult.reachedBottom
+          : scanResult.reachedEnd
             ? `End of library reached — ${nf(scanResult.discovered)} new items.`
             : `Listing stopped — ${nf(scanResult.discovered)} new items.`, 'ok');
+
+        this.log(scanLog,
+          `${nf(scanResult.pages)} page(s), ${nf(scanResult.requests)} request(s)`
+          + (scanResult.retries ? ` · ${nf(scanResult.retries)} retried` : '') + '.');
+
         if (scanResult.skippedRecent) {
           this.log(scanLog, `${nf(scanResult.skippedRecent)} item(s) skipped as too recent.`);
         }
-        if (scanResult.stillSeeking) {
-          this.log(scanLog, 'No photo old enough was reached — the window may be too wide for this library.', 'err');
+        if (scanResult.alreadyKnown) {
+          this.log(scanLog, `${nf(scanResult.alreadyKnown)} item(s) were already in the catalogue.`);
         }
-        if (scanResult.repaired) {
-          this.log(scanLog, `${nf(scanResult.repaired)} item(s) recovered their thumbnail and can now be analysed.`, 'ok');
+        // The API returns the thumbnail with the item, so this should be zero.
+        // It is reported anyway: if it ever stops being zero, that is Google
+        // changing something, and a gap nobody is told about is how the last
+        // one ran unnoticed for weeks.
+        if (scanResult.skippedNoThumb) {
+          this.log(scanLog,
+            `${nf(scanResult.skippedNoThumb)} item(s) came back with no thumbnail URL and were not listed.`, 'err');
         }
-        if (scanResult.starved) {
-        this.log(scanLog,
-          'Stopped: Google Photos rendered the grid but served no images. '
-          + 'Nothing here can fix that — leave it a while and run again.', 'err');
-      }
-      if (scanResult.skippedNoThumb) {
-        const seen = scanResult.discovered + scanResult.skippedNoThumb;
-        const share = Math.round((scanResult.skippedNoThumb / seen) * 100);
-        this.log(scanLog,
-          `${nf(scanResult.skippedNoThumb)} tile(s) passed over: no image yet, so not listed (${share}% of what was seen).`
-          + (share > 40 ? ' Google is not keeping up — try a larger page size.' : ''));
-      }
-      this.state.settings.lastRunStarved = !!scanResult.starved;
-      if (scanResult.thumbRatio != null) {
-        this.state.settings.lastThumbRatio = scanResult.thumbRatio;
-        this.persist();
-        this.log(scanLog,
-          `Images ready when harvesting: ${Math.round(scanResult.thumbRatio * 100)}%` +
-          (scanResult.thumbBudgetMs ? ` (waited up to ${dur(Math.round(scanResult.thumbBudgetMs / 1000))} per stop)` : ''));
-      }
-      if (scanResult.perRound) {
-        this.state.settings.lastTilesPerStep = scanResult.perRound;
-        this.state.settings.lastWaitSplit = {
-          settle: scanResult.waitMs || 0,
-          thumbs: scanResult.thumbWaitMs || 0
-        };
-        this.persist();
-        this.log(scanLog,
-          `${nf(Math.round(scanResult.perRound))} item(s) per stop over ${nf(scanResult.rounds)} stop(s).`);
-        this.log(scanLog, this.describeWaits(scanResult));
-      }
-      if (scanResult.noUrl) {
-          this.log(scanLog, `${nf(scanResult.noUrl)} item(s) seen before their thumbnail arrived — run again to recover them.`, 'err');
+        if (scanResult.sized) {
+          this.log(scanLog,
+            `${nf(scanResult.sized)} file size(s) read — ${formatBytes(scanResult.bytes)} listed this run.`);
+        } else if (s.scanSizes && scanResult.discovered) {
+          this.log(scanLog, 'File sizes could not be read this run; everything else is unaffected.');
+        }
+        if (scanResult.error) {
+          this.log(scanLog, `Listing ended early: ${scanResult.error.message}`, 'err');
         }
       }
 
@@ -2677,40 +2884,32 @@ export class Panel {
         return;
       }
 
-      this.log(anaLog, `Analysis done: ${nf(anaStats.done)} succeeded, ${nf(anaStats.failed)} failed.`, 'ok');
+      this.log(anaLog,
+        (this.aborting ? 'Analysis stopped: ' : 'Analysis done: ')
+        + `${nf(anaStats.done)} succeeded, ${nf(anaStats.failed)} failed.`,
+        this.aborting ? '' : 'ok');
       if (anaStats.spent?.photos) {
         this.state.settings.lastAnalysisSplit = { ...anaStats.spent };
         this.persist();
         this.log(anaLog, this.describeAnalysis(anaStats.spent));
       }
 
-      // Recover thumbnails that arrived late, then analyse what was just
-      // recovered: finishing the job is the machine's part, not the user's.
-      const rattrapees = await this.autoRepair(scanLog, anaLog, refreshBadge);
-      if (rattrapees) {
-        this.analyzer.setInflight(s.analyzeInflight);
-        const res2 = await this.analyzer.run((st) => {
-          anaStats = st;
-          anaLog.firstElementChild?.remove();
-          this.log(anaLog, `Recovery · ${nf(st.done)} analysed`);
-          refreshBadge();
-        });
-        this.log(anaLog, `Recovery done: ${nf(res2.done)} more images analysed.`, 'ok');
-      }
-
       // The people pass rides on the same run: it needs the face scores the
       // analysis just produced, so it cannot start earlier, and asking the user
       // to press a second button for a second wait would be a poor trade.
       let peopleDone = 0;
-      if (s.scanPeople) {
+      if (s.scanPeople && !this.aborting) {
         await this.reload();
         peopleDone = await this.runPeopleScan({ inline: true, log: anaLog });
       }
 
       this.state.busy = null;
       this.flashStatus(
-        `Done · ${nf(anaStats.done)} images analysed` +
-        (peopleDone ? ` · ${nf(peopleDone)} face(s)` : '')
+        (this.aborting ? 'Stopped · ' : 'Done · ') +
+        `${nf(anaStats.done)} images analysed` +
+        (peopleDone ? ` · ${nf(peopleDone)} face(s)` : ''),
+        this.aborting ? null : 'done',
+        this.aborting ? 5000 : 4000
       );
     } catch (err) {
       this.log(scanLog, `Error: ${err.message}`, 'err');
@@ -2718,78 +2917,49 @@ export class Panel {
       this.flashStatus('Run failed', 'error', 8000);
     } finally {
       this.state.busy = null;
+      this.runCounts = null;
+      this.liveFaces = null;
+      this.runAbort = null;
+      this.aborting = false;
       await this.reload();
       this.renderAll();
     }
   }
 
   /**
-   * Recover thumbnails that arrived after listing passed by.
+   * Stop everything the current run is doing.
    *
-   * In practice a handful remain. Bringing each back on screen costs a second
-   * or two — negligible for ten items, unreasonable for thousands. Above a
-   * threshold a fresh pass over the grid is far faster, and we say so rather
-   * than start it unannounced.
+   * Not instant, and it cannot be: each stage checks between batches, and the
+   * batch already in flight has to come back first — a dozen photos re-fetched
+   * at 512px and run through the recogniser, which is a few seconds. So the
+   * click is acknowledged immediately, in the button and in the badge. A stop
+   * that looks inert is a stop people press again, and then assume is broken.
    *
-   * @returns {Promise<number>} items recovered
+   * Acknowledged by repainting the button rather than re-rendering the tab:
+   * rebuilding it mid-run replaces the log elements the run is writing into.
    */
-  async autoRepair(scanLog, anaLog, refreshBadge) {
-    if (!this.state.settings.autoRepairThumbs) return 0;
-
-    const targets = await db.getItemsMissingThumb(MAX_THUMB_ATTEMPTS);
-    const plan = planThumbRepair({
-      missing: targets.length,
-      enabled: true,
-      targetedLimit: this.state.settings.autoRepairLimit || 500
-    });
-
-    if (plan.mode === 'none') return 0;
-    if (plan.mode === 'rescan') {
-      this.log(scanLog,
-        `${nf(plan.count)} thumbnails still missing: too many for one-by-one recovery. Run again — a fresh pass picks them up along the way.`,
-        'err');
-      return 0;
-    }
-
-    this.log(scanLog, `Recovering ${nf(plan.count)} late thumbnail(s)…`);
-    this.setStatus({ label: `Recovery · 0/${nf(plan.count)}`, ratio: 0 });
-
-    const res = await repairThumbnails(targets, {
-      thumbSize: this.state.settings.thumbSize,
-      shouldStop: () => this.aborting,
-      onProgress: (p) => {
-        this.setStatus({
-          label: `Recovery · ${nf(p.done)}/${nf(p.total)}`,
-          ratio: p.total ? p.done / p.total : null
-        });
-        scanLog.firstElementChild?.remove();
-        this.log(scanLog, `Recovery ${nf(p.done)}/${nf(p.total)} · ${nf(p.repaired)} recovered`);
-      }
-    });
-
-    this.log(scanLog,
-      res.repaired
-        ? `${nf(res.repaired)} thumbnail(s) recovered.`
-        : 'No further thumbnails could be recovered.',
-      res.repaired ? 'ok' : '');
-    if (res.failed) {
-      this.log(scanLog, `${nf(res.failed)} item(s) still have no preview — often videos still processing.`);
-    }
-    return res.repaired;
-  }
-
   abortAll() {
+    if (!this.state.busy || this.aborting) return;
     this.aborting = true;
+    this.runAbort?.abort();
     this.scanner?.abort();
     this.analyzer?.abort();
+    this.trasher?.abort();
+
+    if (this.runButton) {
+      this.runButton.textContent = 'Stopping…';
+      this.runButton.disabled = true;
+    }
+    this.setStatus({ label: 'Stopping…', ratio: null, tone: null });
   }
 
   /**
    * Tick the selection in Google Photos, then hand control back.
    *
-   * The extension stops here: you click "Move to bin" in Google's own UI, with
-   * its own counter and confirmation. No execution path in this extension can
-   * destroy a photo.
+   * The alternative to binning it here: you click "Move to bin" in Google's own
+   * UI, with its own counter and confirmation. Slower, because ticking has to
+   * happen in a grid that only renders what is on screen — and worth keeping
+   * for exactly that reason, since it puts the last click in Google's hands.
    */
   async startSelect() {
     if (this.state.busy) return;
@@ -2844,6 +3014,139 @@ export class Panel {
       this.log(logBox, `Error: ${err.message}`, 'err');
       this.state.busy = null;
       this.flashStatus('Ticking failed', 'error', 8000);
+    } finally {
+      this.state.busy = null;
+      await this.reload();
+      this.renderAll();
+    }
+  }
+
+  /* -------------------------------------------------------------- deletion */
+
+  /**
+   * What a deletion would actually do, in the words the confirmation uses.
+   *
+   * Built here rather than inside the dialog so it can be checked without a
+   * browser: this text is the entire basis on which someone agrees to remove
+   * hundreds of photos, and it must never claim more than it will do.
+   */
+  trashSummary() {
+    const ids = this.state.selection;
+    const items = this.state.items.filter((i) => ids.has(i.id));
+    return { ...planTrash(items), requested: items.length };
+  }
+
+  /**
+   * Ask, in the plainest terms available, then move the selection to the bin.
+   *
+   * The confirmation is a step in the panel rather than a `confirm()` dialog:
+   * this extension runs inside Google's page, and a native dialog there blocks
+   * everything, including our own progress. It states the count, the storage it
+   * frees, and — the part that makes this reversible and therefore acceptable —
+   * that the photos land in Google's bin for sixty days.
+   */
+  confirmTrash() {
+    if (this.state.busy) return;
+    const plan = this.trashSummary();
+    if (!plan.deletable.length) {
+      this.flashStatus('Nothing in the selection can be binned', 'error', 6000);
+      return;
+    }
+    this.state.confirmTrash = plan;
+    this.renderAll();
+  }
+
+  cancelTrash() {
+    this.state.confirmTrash = null;
+    this.renderAll();
+  }
+
+  /**
+   * The confirmation panel. Rendered in the footer and in the sorting view,
+   * because those are the two places the button can be pressed from.
+   */
+  buildTrashConfirm() {
+    const plan = this.state.confirmTrash;
+    if (!plan) return null;
+
+    const skipped = plan.noKey.length + plan.notOwned.length;
+    return el('div', { class: 'banner danger', style: 'margin-top:10px' },
+      el('b', {}, `Move ${nf(plan.deletable.length)} photo(s) to the Google Photos bin?`),
+      el('div', { class: 'muted', style: 'margin-top:6px' },
+        plan.sizedCount
+          ? `About ${formatBytes(plan.bytes)} of storage`
+            + (plan.sizedCount < plan.deletable.length
+              ? ` (measured on ${nf(plan.sizedCount)} of them).`
+              : '.')
+          : 'File sizes are unknown for this selection, so the storage freed cannot be stated.'),
+      el('div', { style: 'margin-top:6px' },
+        'They stay in the bin for 60 days, and can be restored from there. Nothing is deleted permanently.'),
+      skipped
+        ? el('div', { class: 'muted tiny', style: 'margin-top:6px' },
+            `${nf(skipped)} item(s) in the selection will be left alone: `
+            + [plan.notOwned.length ? `${nf(plan.notOwned.length)} shared by someone else` : null,
+               plan.noKey.length ? `${nf(plan.noKey.length)} listed before this version and missing the key the API needs` : null]
+              .filter(Boolean).join(', ') + '.')
+        : null,
+      el('div', { class: 'row', style: 'margin-top:10px' },
+        el('button', {
+          class: 'action danger',
+          text: `Move ${nf(plan.deletable.length)} to bin`,
+          onclick: () => this.startTrash()
+        }),
+        el('span', { class: 'spacer' }),
+        el('button', { class: 'action', text: 'Cancel', onclick: () => this.cancelTrash() })));
+  }
+
+  /**
+   * Do it.
+   *
+   * The catalogue entry for a photo is dropped only after Google confirms
+   * taking it, and only for that photo — see `Trasher`. A row removed for
+   * something still in the library would hide it from every later run.
+   */
+  async startTrash() {
+    const plan = this.state.confirmTrash;
+    if (!plan || this.state.busy) return;
+    this.state.confirmTrash = null;
+    this.state.busy = 'trash';
+    this.setStatus({ label: 'Moving to bin…', ratio: 0, tone: null });
+    this.renderAll();
+
+    const logBox = this.selectLog;
+    this.trasher = new Trasher();
+
+    try {
+      this.log(logBox, `Moving ${nf(plan.deletable.length)} photo(s) to the bin…`);
+      const report = await this.trasher.run(plan.deletable, (p) => {
+        this.setStatus({
+          label: `Binning · ${nf(p.done)}/${nf(p.total)}`,
+          ratio: p.total ? p.done / p.total : null
+        });
+        logBox?.firstElementChild?.remove();
+        this.log(logBox, `${nf(p.trashed)} moved of ${nf(p.done)} sent`);
+      });
+
+      for (const message of report.errors || []) {
+        this.log(logBox, `Refused by Google Photos: ${message}`, 'err');
+      }
+
+      this.state.busy = null;
+      if (report.trashed) {
+        this.state.selection = new Set();
+        this.log(logBox,
+          `${nf(report.trashed)} photo(s) are in the bin. Restore them from Google Photos → Bin within 60 days.`, 'ok');
+        this.flashStatus(`${nf(report.trashed)} moved to the bin`, 'done', 8000);
+      } else {
+        this.flashStatus('Nothing could be moved to the bin', 'error', 8000);
+      }
+      if (report.failed) {
+        this.log(logBox, `${nf(report.failed)} photo(s) could not be moved; they are still in your library.`, 'err');
+      }
+    } catch (err) {
+      this.log(logBox, `Error: ${err.message}`, 'err');
+      this.state.busy = null;
+      this.flashStatus('Move to bin failed', 'error', 8000);
     } finally {
       this.state.busy = null;
       await this.reload();

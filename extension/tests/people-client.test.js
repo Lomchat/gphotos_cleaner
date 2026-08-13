@@ -114,22 +114,43 @@ test('one failed photo does not fail its batch', async () => {
 
 test('an engine-level failure stops the run instead of repeating it', async () => {
   // A missing model will not fix itself on the next batch; retrying a thousand
-  // times would just take longer to say the same thing.
+  // times would just take longer to say the same thing. Batches already in
+  // flight still land — that is inherent to running several at once — but no
+  // runner picks up anything new.
+  let calls = 0;
+  const many = Array.from({ length: 600 }, (_, i) => photo(`p${i}`));
+  const totals = await scanFaces(many, {
+    inflight: 3,
+    send: async () => { calls++; return { ok: false, error: 'recognition unavailable' }; }
+  });
+  assert.ok(calls <= 3, `${calls} batches attempted against a dead engine`);
+  assert.match(totals.errors[0], /unavailable/);
+});
+
+test('one bad round trip does not end the pass', async () => {
+  // A dropped message is not a broken engine. Ending there would cost the
+  // whole library for one transient failure, on a pass that takes minutes.
   let calls = 0;
   const many = Array.from({ length: 60 }, (_, i) => photo(`p${i}`));
   const totals = await scanFaces(many, {
-    send: async () => { calls++; return { ok: false, error: 'recognition unavailable' }; }
+    save: noSave,
+    inflight: 1,
+    send: async (m) => {
+      if (++calls === 1) throw new Error('message port closed');
+      return { ok: true, results: m.items.map((it) => ({ id: it.id, ok: true, faces: [] })) };
+    }
   });
-  assert.equal(calls, 1);
-  assert.match(totals.errors[0], /unavailable/);
+  assert.equal(calls, 5, 'the remaining four batches still ran');
+  assert.equal(totals.scanned, 48);
 });
 
 test('an abort signal stops the run between batches', async () => {
   const controller = new AbortController();
   let calls = 0;
-  const many = Array.from({ length: 60 }, (_, i) => photo(`p${i}`));
+  const many = Array.from({ length: 600 }, (_, i) => photo(`p${i}`));
   await scanFaces(many, {
     save: noSave,
+    inflight: 1,
     signal: controller.signal,
     send: async (m) => {
       if (++calls === 2) controller.abort();
@@ -137,6 +158,64 @@ test('an abort signal stops the run between batches', async () => {
     }
   });
   assert.equal(calls, 2);
+});
+
+test('an abort reaches every runner, not just the one that saw it', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const many = Array.from({ length: 600 }, (_, i) => photo(`p${i}`));
+  await scanFaces(many, {
+    save: noSave,
+    inflight: 3,
+    send: async (m) => {
+      if (++calls === 3) controller.abort();
+      return { ok: true, results: m.items.map((it) => ({ id: it.id, ok: true, faces: [] })) };
+    },
+    signal: controller.signal
+  });
+  // Fifty batches remain. Anything near that means a runner kept going.
+  assert.ok(calls <= 6, `${calls} batches ran after Stop`);
+});
+
+test('batches really do run several at a time', async () => {
+  // The pass used to send one batch and wait for it, so twelve photos were
+  // ever moving while the analysis beside it kept seventy-two. The link is
+  // almost all latency — ~122ms sequentially against ~13ms at concurrency 16
+  // — so this is the whole difference between the two stages' speed.
+  let live = 0;
+  let peak = 0;
+  const many = Array.from({ length: 120 }, (_, i) => photo(`p${i}`));
+  await scanFaces(many, {
+    save: noSave,
+    inflight: 3,
+    send: async (m) => {
+      peak = Math.max(peak, ++live);
+      await new Promise((r) => setTimeout(r, 5));
+      live--;
+      return { ok: true, results: m.items.map((it) => ({ id: it.id, ok: true, faces: [] })) };
+    }
+  });
+  assert.equal(peak, 3, `only ${peak} batch(es) were ever in flight`);
+});
+
+test('progress only ever moves forwards', async () => {
+  // Batches finish out of order once several are in flight. Counting from the
+  // index of the one that just landed would make the figure jump backwards.
+  const seen = [];
+  const many = Array.from({ length: 120 }, (_, i) => photo(`p${i}`));
+  await scanFaces(many, {
+    save: noSave,
+    inflight: 3,
+    onProgress: ({ done }) => seen.push(done),
+    send: async (m) => {
+      await new Promise((r) => setTimeout(r, m.items[0].id.endsWith('0') ? 12 : 1));
+      return { ok: true, results: m.items.map((it) => ({ id: it.id, ok: true, faces: [] })) };
+    }
+  });
+  for (let i = 1; i < seen.length; i++) {
+    assert.ok(seen[i] >= seen[i - 1], `progress went ${seen[i - 1]} -> ${seen[i]}`);
+  }
+  assert.equal(seen.at(-1), 120, 'and ends at the total');
 });
 
 test('an empty list makes no request', async () => {

@@ -16,11 +16,21 @@ import {
 
 /*
  * Sized for the network, not the CPU: these workers spend most of their time
- * waiting on a thumbnail (tens of ms) and only ~1.5ms on the classical
- * measurements. Capping at core count would leave the link idle. Face detection
- * is CPU-bound and lives in its own, smaller pool.
+ * waiting on a thumbnail and only ~1.5ms on the classical measurements. Capping
+ * at core count would leave the link idle. Face detection is CPU-bound and
+ * lives in its own, smaller pool.
+ *
+ * Measured on a live library: one thumbnail takes ~122ms sequentially and
+ * ~13ms at sixteen in flight — the link is almost all latency, and throughput
+ * flattens past sixteen concurrent *fetches*. But a worker is not fetching the
+ * whole time: after measuring it waits on the detection pool, and with sixteen
+ * workers queueing onto five detectors that wait is a quarter of the cycle. So
+ * sixteen workers keep about twelve fetches outstanding, not sixteen.
+ *
+ * The pool is therefore sized above the fetch ceiling rather than at it, so the
+ * ones blocked on detection are covered by the ones that are not.
  */
-const POOL_SIZE = Math.max(8, Math.min(16, (navigator.hardwareConcurrency || 4) * 2));
+const POOL_SIZE = Math.max(12, Math.min(24, (navigator.hardwareConcurrency || 4) * 2));
 const JOB_TIMEOUT_MS = 45000;
 const MAX_RESPAWNS = POOL_SIZE * 3;
 
@@ -208,9 +218,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'PEOPLE_BATCH') {
-    // Sequential per photo, parallel across photos: each photo already fans its
-    // faces out across the recognition pool, and stacking both would queue far
-    // more work than there are workers.
+    // Parallel across the photos of a batch, and each photo fans its own faces
+    // out across the recognition pool. The comment here used to claim that
+    // second part while `analysePhoto` awaited each face in turn.
     Promise.all(msg.items.map((item) => analysePhoto(item)))
       .then((results) => sendResponse({ ok: true, results }))
       .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));

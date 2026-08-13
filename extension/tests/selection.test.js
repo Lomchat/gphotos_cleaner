@@ -226,3 +226,82 @@ test('a tick repaints and never re-renders', () => {
   assert.equal(p.repainted, 1);
   assert.equal(p.rendered, undefined, 're-rendering would lose the scroll position');
 });
+
+/* --------------------------------------------- what a tick has to repaint */
+
+/**
+ * The full-screen view is where ticking happens — that is the whole reason it
+ * exists — and its footer carries both actions. It was the one thing a tick did
+ * not repaint: the summary sat at "0 ticked" and both buttons stayed greyed
+ * however many photos were selected, so the selection looked like it had not
+ * registered at all.
+ *
+ * Rebuilding the modal instead is not an option: it would throw away the scroll
+ * position of the grid being worked through, which is the bug `paintSelection`
+ * was written to avoid in the first place.
+ */
+function actionPanel(selected = []) {
+  const p = {
+    state: { selection: new Set(selected), busy: null },
+    modalTicked: { textContent: '' },
+    modalTickButton: { disabled: false },
+    modalBinButton: { disabled: false, textContent: '' },
+    paintActions: Panel.prototype.paintActions
+  };
+  p.paintActions();
+  return p;
+}
+
+test('a selection lights up the actions in the sorting view', () => {
+  const p = actionPanel(['a', 'b', 'c']);
+  assert.equal(p.modalBinButton.disabled, false);
+  assert.equal(p.modalTickButton.disabled, false);
+  assert.match(p.modalBinButton.textContent, /Move to bin \(3\)/);
+});
+
+test('an empty selection leaves both actions unusable', () => {
+  const p = actionPanel([]);
+  assert.equal(p.modalBinButton.disabled, true);
+  assert.equal(p.modalTickButton.disabled, true);
+  assert.equal(p.modalBinButton.textContent, 'Move to bin', 'no count when there is nothing');
+});
+
+test('the count in the footer follows the selection', () => {
+  const p = actionPanel(['a', 'b']);
+  assert.equal(p.modalTicked.textContent, '2');
+});
+
+test('a run in progress blocks both actions whatever is selected', () => {
+  const p = actionPanel(['a']);
+  p.state.busy = 'full';
+  p.paintActions();
+  assert.equal(p.modalBinButton.disabled, true);
+  assert.equal(p.modalTickButton.disabled, true);
+});
+
+test('repainting a closed modal is not an error', () => {
+  // The modal is torn down whenever it closes; a tick from the panel side must
+  // not care.
+  const p = {
+    state: { selection: new Set(['a']), busy: null },
+    modalTicked: null, modalTickButton: null, modalBinButton: null,
+    paintActions: Panel.prototype.paintActions
+  };
+  assert.doesNotThrow(() => p.paintActions());
+});
+
+test('every tick repaints the actions', () => {
+  // paintSelection -> refreshCounters -> paintActions. Without that last link
+  // the footer only wakes up on a filter change.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  refreshCounters() {');
+  const block = source.slice(start, source.indexOf('  onFilterChange()', start));
+  assert.match(block, /this\.paintActions\(\)/);
+});
+
+test('the ticking log survives the footer being repainted', () => {
+  // renderFooter runs on every tick and used to build a fresh log element,
+  // while a running job held the old one and wrote into nothing.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  assert.match(source, /this\.selectLog \|\|= el\('div', \{ class: 'log' \}\)/);
+});
