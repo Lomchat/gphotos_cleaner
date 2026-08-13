@@ -80,6 +80,12 @@ nobody in it reaches 100% on measurement alone — there is no identity stage
 waiting to run. The badge names every stage at once, so a run reads
 `Listing 1,200 · Analysing 900 · Faces 40/300` whether or not the panel is open.
 
+**Stop** halts every stage — listing, analysis and the face pass alike. It is
+not instant and cannot be: each stage checks between batches, and the batch
+already in flight has to come back first, which at 512px is a few seconds. So
+the click is acknowledged straight away in the button and the badge. Whatever
+was read before the stop is kept and grouped; a rerun picks up the rest.
+
 **2 · Sort.** The tab itself is a door: a summary and one button. The work
 happens in the wide view — criteria on the left, order buttons above, thumbnails
 filling the rest. Judging thumbnails is the whole task, and a 440px column shows
@@ -525,7 +531,7 @@ not blocked by CORS. A test verifies every recognised host has a permission.
 
 ```bash
 cd extension
-npm test        # 515 tests, no external dependencies
+npm test        # 531 tests, no external dependencies
 ```
 
 No build step. The extension loads as-is; tests run on Node's built-in runner.

@@ -306,6 +306,9 @@ export class Panel {
     // without rebuilding the tab that shows it.
     this.runCounts = null;
     this.liveFaces = null;
+    // One signal for a whole run. Every stage watches it, including the ones
+    // that live in another document — the face pass reads it between batches.
+    this.runAbort = null;
   }
 
   /* ------------------------------------------------------------- montage */
@@ -1070,7 +1073,10 @@ export class Panel {
       )
     );
 
-    const running = this.state.busy === 'full';
+    // A standalone face pass is just as long as a full run, and just as
+    // stoppable. Leaving the button disabled during it meant the only way out
+    // was to reload the page.
+    const running = this.state.busy === 'full' || this.state.busy === 'people';
 
     this.scanBar = el('i');
     this.scanLog = el('div', { class: 'log' });
@@ -1100,15 +1106,16 @@ export class Panel {
           el(
             'div',
             { class: 'row', style: 'margin-top:12px' },
-            el('button', {
+            (this.runButton = el('button', {
               class: 'action primary',
-              text: running ? 'Stop' : this.runLabel(pending),
+              text: running ? (this.aborting ? 'Stopping…' : 'Stop') : this.runLabel(pending),
               // A dead bridge means the analysis engine is unreachable: the
               // run would start, fail on its first batch, and report an error
               // that says nothing about the actual cause.
-              disabled: this.state.contextLost || (!!this.state.busy && !running),
+              disabled: this.state.contextLost || (running && this.aborting)
+                || (!!this.state.busy && !running),
               onclick: () => (running ? this.abortAll() : this.startFullRun())
-            }),
+            })),
             el('span', { class: 'spacer' }),
             this.state.cursor && !running
               ? el('button', {
@@ -2240,7 +2247,11 @@ export class Panel {
     const todo = pendingPeople(this.state.items);
     if (!todo.length) return 0;
 
-    if (!inline) this.state.busy = 'people';
+    if (!inline) {
+      this.state.busy = 'people';
+      this.aborting = false;
+      this.runAbort = new AbortController();
+    }
 
     // Fetched here rather than behind a button: the switch above is the
     // consent, and asking twice for the same decision only strands people who
@@ -2266,6 +2277,9 @@ export class Panel {
     this.renderAll();
 
     const totals = await scanFaces(todo, {
+      // Without this the pass ignored Stop entirely — and it is the longest
+      // stage of a run, so it was the one people actually wanted to stop.
+      signal: this.runAbort?.signal,
       send: (m) => this.send(m),
       save: (results, ids) => this.saveFaces(results, ids),
       onProgress: ({ done, total, faces }) => {
@@ -2290,17 +2304,24 @@ export class Panel {
     });
 
     if (totals.errors.length) p.error = totals.errors[0];
-    if (!inline) this.state.busy = null;
+    const stopped = this.aborting;
+    if (!inline) {
+      this.state.busy = null;
+      this.runAbort = null;
+      this.aborting = false;
+    }
     p.progress = null;
     this.liveFaces = null;
+
+    const summary = `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)`
+      + (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '');
     if (log) {
-      this.log(log, `Faces done: ${nf(totals.faces)} in ${nf(totals.scanned)} photo(s)` +
-        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : ''), 'ok');
+      // What was read is kept and grouped either way: a stopped pass is
+      // partial work, not wasted work, and the next run picks up the rest.
+      this.log(log, stopped ? `Faces stopped: ${summary}` : `Faces done: ${summary}`,
+        stopped ? '' : 'ok');
     } else {
-      this.flashStatus(
-        `${nf(totals.faces)} face(s) in ${nf(totals.scanned)} photo(s)` +
-        (totals.tooSmall ? `, ${nf(totals.tooSmall)} too small to identify` : '')
-      );
+      this.flashStatus(stopped ? `Stopped · ${summary}` : summary, stopped ? null : 'done', 5000);
     }
     await this.reload();
     await this.rebuildGroups({ quiet: inline });
@@ -2688,6 +2709,7 @@ export class Panel {
     if (this.state.busy) return;
     this.state.busy = 'full';
     this.aborting = false;
+    this.runAbort = new AbortController();
     this.setStatus({ label: 'Starting engine…', ratio: null, tone: null });
     this.renderAll();
 
@@ -2826,7 +2848,10 @@ export class Panel {
         return;
       }
 
-      this.log(anaLog, `Analysis done: ${nf(anaStats.done)} succeeded, ${nf(anaStats.failed)} failed.`, 'ok');
+      this.log(anaLog,
+        (this.aborting ? 'Analysis stopped: ' : 'Analysis done: ')
+        + `${nf(anaStats.done)} succeeded, ${nf(anaStats.failed)} failed.`,
+        this.aborting ? '' : 'ok');
       if (anaStats.spent?.photos) {
         this.state.settings.lastAnalysisSplit = { ...anaStats.spent };
         this.persist();
@@ -2837,15 +2862,18 @@ export class Panel {
       // analysis just produced, so it cannot start earlier, and asking the user
       // to press a second button for a second wait would be a poor trade.
       let peopleDone = 0;
-      if (s.scanPeople) {
+      if (s.scanPeople && !this.aborting) {
         await this.reload();
         peopleDone = await this.runPeopleScan({ inline: true, log: anaLog });
       }
 
       this.state.busy = null;
       this.flashStatus(
-        `Done · ${nf(anaStats.done)} images analysed` +
-        (peopleDone ? ` · ${nf(peopleDone)} face(s)` : '')
+        (this.aborting ? 'Stopped · ' : 'Done · ') +
+        `${nf(anaStats.done)} images analysed` +
+        (peopleDone ? ` · ${nf(peopleDone)} face(s)` : ''),
+        this.aborting ? null : 'done',
+        this.aborting ? 5000 : 4000
       );
     } catch (err) {
       this.log(scanLog, `Error: ${err.message}`, 'err');
@@ -2855,15 +2883,38 @@ export class Panel {
       this.state.busy = null;
       this.runCounts = null;
       this.liveFaces = null;
+      this.runAbort = null;
+      this.aborting = false;
       await this.reload();
       this.renderAll();
     }
   }
 
+  /**
+   * Stop everything the current run is doing.
+   *
+   * Not instant, and it cannot be: each stage checks between batches, and the
+   * batch already in flight has to come back first — a dozen photos re-fetched
+   * at 512px and run through the recogniser, which is a few seconds. So the
+   * click is acknowledged immediately, in the button and in the badge. A stop
+   * that looks inert is a stop people press again, and then assume is broken.
+   *
+   * Acknowledged by repainting the button rather than re-rendering the tab:
+   * rebuilding it mid-run replaces the log elements the run is writing into.
+   */
   abortAll() {
+    if (!this.state.busy || this.aborting) return;
     this.aborting = true;
+    this.runAbort?.abort();
     this.scanner?.abort();
     this.analyzer?.abort();
+    this.trasher?.abort();
+
+    if (this.runButton) {
+      this.runButton.textContent = 'Stopping…';
+      this.runButton.disabled = true;
+    }
+    this.setStatus({ label: 'Stopping…', ratio: null, tone: null });
   }
 
   /**
