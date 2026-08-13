@@ -35,6 +35,21 @@ const SETTINGS_KEY = 'gpc:settings';
 const FILTERS_KEY = 'gpc:filters';
 const PEOPLE_KEY = 'gpc:people';
 
+/**
+ * How far back the library has ever been walked.
+ *
+ * Deliberately its own key, and deliberately **not** cleared by the reset.
+ * Everything else the extension stores can be rebuilt by running again; this
+ * cannot, because it is a record of work that was done rather than of what was
+ * found. Clearing the catalogue and starting over should not also mean
+ * forgetting that the first six months are behind you.
+ *
+ * It only ever moves backwards in time — the oldest photo any run has handled,
+ * across every window and every reset — so it is always a safe place to
+ * continue from.
+ */
+const PROGRESS_KEY = 'gpc:progress';
+
 const DEFAULT_SETTINGS = {
   // 176px: perceptual hashes and the sharp/blurry ordering are stable at this
   // scale (verified by tests) for about half the bytes of 256px — and transfer
@@ -296,6 +311,9 @@ export class Panel {
       // Set under the orders that answer a question about a group: the grid
       // split into blocks. Null everywhere else.
       sections: null,
+      // { oldestTs, updatedAt } — how far back the library has ever been
+      // walked. Survives a reset; see PROGRESS_KEY.
+      progress: null,
       // The photo being looked at full size, if any.
       viewing: null,
       faceModel: null,
@@ -366,8 +384,9 @@ export class Panel {
 
   async loadPersisted() {
     try {
-      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
+      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY, PROGRESS_KEY]);
       if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
+      if (got[PROGRESS_KEY]) this.state.progress = got[PROGRESS_KEY];
       if (Array.isArray(got[PEOPLE_KEY])) {
         // Only names and centroids persist. Groups themselves are rebuilt from
         // the stored faces, because their ids are positional.
@@ -394,6 +413,29 @@ export class Panel {
   persist() {
     storageSet({ [SETTINGS_KEY]: this.state.settings, [FILTERS_KEY]: this.state.filters })
       .catch((err) => this.noteContext(err));
+  }
+
+  /**
+   * Record how far back a run reached, if it beat the previous best.
+   *
+   * Only ever backwards: a run bounded to the last month must not move the
+   * mark forward and lose the fact that January is already done. Saved under
+   * its own key so the reset leaves it alone.
+   */
+  async noteProgress(oldestTs) {
+    if (oldestTs == null) return;
+    const previous = this.state.progress?.oldestTs;
+    if (previous != null && previous <= oldestTs) return;
+
+    this.state.progress = { oldestTs, updatedAt: Date.now() };
+    await storageSet({ [PROGRESS_KEY]: this.state.progress }).catch((err) => this.noteContext(err));
+  }
+
+  /** Forget it, which the reset deliberately does not do. */
+  async forgetProgress() {
+    this.state.progress = null;
+    await storageRemove([PROGRESS_KEY]).catch((err) => this.noteContext(err));
+    this.renderAll();
   }
 
   /**
@@ -459,7 +501,7 @@ export class Panel {
     this.headerSub = el('span', { class: 'sub' });
     this.headerReset = el('button', {
       class: 'icon-btn danger', text: '↺',
-      title: 'Reset everything: catalogue, analyses, settings and filters.\nYour photos are untouched; only the analysis time is lost.',
+      title: 'Reset everything: catalogue, analyses, settings and filters.\nYour photos are untouched; only the analysis time is lost.\nHow far back you have walked is kept.',
       onclick: () => this.factoryReset()
     });
     put(
@@ -1735,6 +1777,26 @@ export class Panel {
       }));
     }
 
+    // Carry on from where the library was last left. The months above are
+    // relative to today and drift with it; this one is a fact — the oldest
+    // photo any run has handled — so it is the only preset that continues the
+    // work rather than restarting a window over it.
+    const reached = this.state.progress?.oldestTs;
+    if (reached != null) {
+      row.append(el('button', {
+        class: 'chip',
+        text: `Carry on from ${formatDate(reached)}`,
+        title: 'The oldest photo any run has reached. Kept even across a reset.',
+        'aria-pressed': String(s.scanOlderThanTs === reached),
+        disabled: !!this.state.busy,
+        onclick: () => {
+          s.scanOlderThanTs = reached;
+          this.persist();
+          this.renderAll();
+        }
+      }));
+    }
+
     wrap.append(
       el('div', { class: 'muted', style: 'margin-bottom:6px' },
         'Only handle photos older than:'),
@@ -1756,6 +1818,16 @@ export class Panel {
     if (s.scanOlderThanTs) {
       wrap.append(el('div', { class: 'muted', style: 'margin-top:6px' },
         `Only photos before ${formatDate(s.scanOlderThanTs)}.`));
+    }
+    if (reached != null) {
+      wrap.append(el('div', { class: 'muted tiny', style: 'margin-top:4px' },
+        `Oldest photo handled so far: ${formatDate(reached)}. Kept even if you reset.`,
+        el('button', {
+          class: 'reset', style: 'margin-left:4px',
+          text: '↺', title: 'Forget how far back the library has been walked',
+          disabled: !!this.state.busy,
+          onclick: () => this.forgetProgress()
+        })));
     }
     return wrap;
   }
@@ -3027,6 +3099,9 @@ export class Panel {
     }
     try {
       await db.clearAll();
+      // PROGRESS_KEY is absent on purpose: how far back the library has been
+      // walked is a record of work done, not of what was found, and no rerun
+      // can recover it. Its own button forgets it.
       await storageRemove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
     } catch (err) {
       this.flashStatus(`Reset failed: ${err.message}`, 'error', 8000);
@@ -3288,6 +3363,10 @@ export class Panel {
             `${nf(scanResult.sized)} file size(s) read — ${formatBytes(scanResult.bytes)} listed this run.`);
         } else if (s.scanSizes && scanResult.discovered) {
           this.log(scanLog, 'File sizes could not be read this run; everything else is unaffected.');
+        }
+        if (scanResult.oldestHandled != null) {
+          await this.noteProgress(scanResult.oldestHandled);
+          this.log(scanLog, `Reached back to ${formatDate(scanResult.oldestHandled)}.`);
         }
         if (scanResult.error) {
           this.log(scanLog, `Listing ended early: ${scanResult.error.message}`, 'err');

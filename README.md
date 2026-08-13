@@ -54,6 +54,11 @@ One button. Three things bound it, and a banner says what the next run will do:
 
 - **Only photos older than** — 6 months, 5 years, a date. This is a request
   parameter, not a filter applied afterwards: the listing simply starts there.
+  Once a run has happened there is also **Carry on from …**, the oldest photo
+  any run has reached. The months are relative to today and drift with it; that
+  one is a fact, so it continues the work instead of restarting a window over
+  it. It only ever moves further back, and it is the one thing the reset does
+  not clear — everything else can be rebuilt by running again.
 - **Limit per run** — 2,000 by default. Progress is kept; a rerun resumes.
 - **File names and sizes**, and **grouping by person** — both on by default.
 
@@ -212,7 +217,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 623 tests, no dependencies
+npm test        # 639 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

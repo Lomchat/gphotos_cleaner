@@ -189,6 +189,10 @@ export class ApiScanner {
     let beforeTimestamp = plan.beforeTimestamp;
     let pageId = plan.pageId;
     let lastTimestamp = beforeTimestamp;
+    // How far back this run actually got, over the photos it was asked to
+    // handle. Distinct from `lastTimestamp`, which also moves for photos
+    // skipped as too recent: those were seen, not handled.
+    let oldestHandled = null;
     let reachedEnd = false;
     let limitReached = false;
     let error = null;
@@ -219,6 +223,13 @@ export class ApiScanner {
             this.stats.skippedRecent++;
             continue;
           }
+          // Past the window check, so this photo is in scope — whether it is
+          // new, already in the catalogue, or unusable. All three mean the run
+          // reached this far back.
+          if (item.timestamp != null && (oldestHandled === null || item.timestamp < oldestHandled)) {
+            oldestHandled = item.timestamp;
+          }
+
           if (this.known.has(item.mediaKey)) {
             this.stats.alreadyKnown++;
             continue;
@@ -309,6 +320,7 @@ export class ApiScanner {
       sized: this.stats.sized,
       bytes: this.stats.bytes,
       lastTimestamp,
+      oldestHandled,
       reachedEnd,
       limitReached,
       aborted: this.aborted,
