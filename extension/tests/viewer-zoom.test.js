@@ -1,5 +1,5 @@
 /**
- * Zooming inside the full-size view.
+ * Looking closely at one photo: zooming it, and walking to the next.
  *
  * A zoom that drifts still zooms — it just fights whoever is using it, and a
  * screenshot cannot tell you which one you have. The property that decides it
@@ -15,6 +15,7 @@ import {
   MIN_SCALE, MAX_SCALE, wheelPixels, clampScale, scaleAfterWheel,
   zoomAbout, clampPan, resetView, transformFor
 } from '../src/ui/viewer-zoom.js';
+import { neighbourOf } from '../src/ui/panel.js';
 
 /** Where a content point ends up on screen under a given view. */
 const project = (view, contentOffset) => view.x + contentOffset * view.scale;
@@ -202,4 +203,73 @@ test('the clamp measures the picture once it has loaded', () => {
   // Its laid-out size is 0 until then, and the limits depend on it.
   assert.match(BIND, /addEventListener\('load', apply\)/);
   assert.match(BIND, /addEventListener\('loadedmetadata', apply\)/);
+});
+
+/* ------------------------------------------------------ walking the grid */
+
+/**
+ * Arrow keys move through the grid as it is currently ordered — and the same
+ * change fixes Escape, which had never worked on the common path: the only
+ * keydown listener was on the panel wrapper, and right-clicking a tile (the
+ * usual way in) focuses nothing, so the event never arrived.
+ */
+
+const list = ['a', 'b', 'c', 'd'].map((id) => ({ id }));
+
+test('the arrows step through the order on screen', () => {
+  assert.equal(neighbourOf(list, 'b', 1).id, 'c');
+  assert.equal(neighbourOf(list, 'b', -1).id, 'a');
+});
+
+test('the ends stop rather than wrap', () => {
+  // Arriving back at the first photo after the last one reads as a glitch
+  // rather than as an end.
+  assert.equal(neighbourOf(list, 'd', 1), null);
+  assert.equal(neighbourOf(list, 'a', -1), null);
+});
+
+test('a photo no longer in the list goes nowhere', () => {
+  // Binning one rebuilds the list underneath the viewer. A stale index would
+  // address whatever has moved into its place.
+  assert.equal(neighbourOf(list, 'gone', 1), null);
+  assert.equal(neighbourOf([], 'a', 1), null);
+});
+
+test('stepping walks the flat list the grid is built from', () => {
+  // Not the catalogue: the order and the criteria have already decided what is
+  // worth looking at, and blocks are flattened in the order they appear.
+  const body = SOURCE.slice(SOURCE.indexOf('  stepViewer('), SOURCE.indexOf('  closeViewer() {'));
+  assert.match(body, /this\.visibleItems\(\)/);
+  assert.equal(/this\.state\.items/.test(body), false);
+});
+
+test('Escape closes the photo, from the photo', () => {
+  const body = SOURCE.slice(SOURCE.indexOf('  onViewerKey('), SOURCE.indexOf('  stepViewer('));
+  assert.match(body, /ev\.key === 'Escape'/);
+  assert.match(body, /this\.closeViewer\(\)/);
+});
+
+test('the viewer can hear its own keys', () => {
+  // The bug behind all of this: focus was never moved, so nothing reached the
+  // listener on the panel wrapper.
+  assert.match(SOURCE, /class: 'viewer', hidden: true, tabIndex: -1/);
+  assert.match(SOURCE, /this\.viewer\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(SOURCE, /this\.viewer\.addEventListener\('keydown'/);
+});
+
+test('a focused video keeps its own arrow keys', () => {
+  // They seek, which is the right answer for something deliberately clicked
+  // into. Stepping away from a player nobody asked to leave would be worse.
+  const body = SOURCE.slice(SOURCE.indexOf('  onViewerKey('), SOURCE.indexOf('  stepViewer('));
+  assert.match(body, /ev\.target instanceof HTMLMediaElement/);
+});
+
+test('the way through is shown, not only bound', () => {
+  // Arrow keys announce themselves to nobody.
+  const body = SOURCE.slice(SOURCE.indexOf('  openViewer(item) {'), SOURCE.indexOf('  bindViewerZoom('));
+  assert.match(body, /class: 'step'/);
+  assert.match(body, /Previous photo \(←\)/);
+  assert.match(body, /disabled: !neighbourOf\(shown, item\.id, delta\)/,
+    'and a step with nowhere to go says so');
+  assert.match(body, /\$\{nf\(at \+ 1\)\} \/ \$\{nf\(shown\.length\)\}/, 'with a position');
 });

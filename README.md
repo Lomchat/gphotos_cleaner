@@ -70,8 +70,9 @@ the click is acknowledged straight away, and whatever was read is kept.
 The work happens in the full-screen view: criteria on the left, orders across
 the top, thumbnails filling the rest. Each tile shows when the photo was taken
 and what it costs. **Right-click any photo** to see it full size — videos play
-— or use the button in its corner. In that view the **wheel zooms towards the
-cursor**, dragging moves a zoomed photo, and a double-click fits it again.
+— or use the button in its corner. There, **← and →** walk through the grid in
+the order it is showing, the **wheel zooms towards the cursor**, dragging moves
+a zoomed photo, a double-click fits it again, and **Escape** closes it.
 
 With no criterion ticked you are browsing the whole library and nothing is
 selected. Tick one and everything it matches is selected for you. The number
@@ -219,7 +220,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 669 tests, no dependencies
+npm test        # 677 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

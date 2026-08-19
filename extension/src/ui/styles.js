@@ -860,6 +860,21 @@ footer .buttons button { flex: 1; }
   box-shadow: 0 20px 70px rgba(0,0,0,.6);
 }
 .viewer header { display: flex; align-items: center; gap: 10px; }
+.viewer:focus { outline: none; }
+.viewer .step {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  font: 400 17px/1 var(--body);
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.viewer .step:hover:not(:disabled) { background: var(--bg-input); border-color: var(--text-faint); }
+.viewer .step:disabled { opacity: .3; cursor: default; }
 .viewer header .spacer { flex: 1; }
 .viewer .stage {
   flex: 1;

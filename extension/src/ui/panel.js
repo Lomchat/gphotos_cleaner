@@ -118,6 +118,28 @@ export function migrateSettings(stored) {
 }
 
 /**
+ * The photo before or after this one, in the order the grid is showing.
+ *
+ * Pure, because the two things that can go wrong are silent. The list is the
+ * flat one the grid is built from, so stepping through it crosses block
+ * boundaries in the order they appear on screen — anything else would jump
+ * somewhere the eye did not expect.
+ *
+ * And the photo may no longer be in the list at all: binning one rebuilds it
+ * underneath the viewer. Returning null there is what stops a stale index
+ * addressing whatever has moved into its place.
+ */
+export function neighbourOf(list, id, delta) {
+  const at = list.findIndex((it) => it.id === id);
+  if (at === -1) return null;
+  const next = at + delta;
+  // Clamped, not wrapped: arriving back at the first photo after the last one
+  // reads as a glitch rather than as an end.
+  if (next < 0 || next >= list.length) return null;
+  return list[next];
+}
+
+/**
  * Catalogue size above which duplicate grouping is no longer recomputed while
  * dragging a slider. Measured: 36ms at 5,000 items, 330ms at 50,000 — the
  * latter rules out any fluidity.
@@ -552,7 +574,12 @@ export class Panel {
     this.panel.append(this.footer);
 
     this.modal = el('div', { class: 'modal', hidden: true });
-    this.viewer = el('div', { class: 'viewer', hidden: true });
+    // Focusable, so it can hear its own keys. Without this the only keydown
+    // listener is the one on `wrap`, which never fires unless focus happens to
+    // be inside the panel already — and right-clicking a tile, the usual way
+    // in, focuses nothing at all. Escape did nothing on the common path.
+    this.viewer = el('div', { class: 'viewer', hidden: true, tabIndex: -1 });
+    this.viewer.addEventListener('keydown', (e) => this.onViewerKey(e));
 
     this.wrap.append(this.badge, this.panel, this.modal, this.viewer);
 
@@ -870,6 +897,18 @@ export class Panel {
 
     const close = () => this.closeViewer();
     const stage = el('div', { class: 'stage' });
+
+    // Where this photo sits in the order on screen. Arrow keys are invisible,
+    // so the way through has to be shown as well as bound.
+    const shown = this.visibleItems();
+    const at = shown.findIndex((it) => it.id === item.id);
+    const step = (delta) => el('button', {
+      class: 'step',
+      text: delta < 0 ? '‹' : '›',
+      title: delta < 0 ? 'Previous photo (←)' : 'Next photo (→)',
+      disabled: !neighbourOf(shown, item.id, delta),
+      onclick: () => this.stepViewer(delta)
+    });
     const media = item.isVideo
       ? el('video', {
           src: `${base}=m18`,
@@ -903,6 +942,9 @@ export class Panel {
               item.width && item.height ? `${item.width}×${item.height}` : null]
               .filter(Boolean).join(' · ')),
           el('span', { class: 'spacer' }),
+          at === -1 ? null : el('span', { class: 'muted tiny' }, `${nf(at + 1)} / ${nf(shown.length)}`),
+          step(-1),
+          step(1),
           // Deciding is the point of looking closely, so the decision is here
           // rather than behind a close button.
           this.viewerTickButton,
@@ -920,6 +962,10 @@ export class Panel {
       el('div', { class: 'backdrop', onclick: close })
     );
     this.viewer.hidden = false;
+    // Focus follows the picture, or none of the keys above reach it. Preventing
+    // scroll matters: the grid behind is a list being worked through, and
+    // focusing an element inside a fixed overlay can otherwise drag it.
+    this.viewer.focus({ preventScroll: true });
   }
 
   /**
@@ -1001,6 +1047,44 @@ export class Panel {
     // clamp depends on it.
     media.addEventListener('load', apply);
     media.addEventListener('loadedmetadata', apply);
+  }
+
+  /**
+   * Keys while a photo is open.
+   *
+   * Left and right move through the grid as it is currently ordered, which is
+   * the whole point: the order and the criteria have already decided what is
+   * worth looking at, and this walks that answer rather than the library.
+   */
+  onViewerKey(ev) {
+    if (this.viewer.hidden) return;
+
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      ev.preventDefault();
+      this.closeViewer();
+      return;
+    }
+
+    const delta = ev.key === 'ArrowRight' ? 1 : ev.key === 'ArrowLeft' ? -1 : 0;
+    if (!delta) return;
+    // A focused <video> uses the arrows to seek, which is the right answer for
+    // something you have deliberately clicked into. Stepping to another photo
+    // from inside a player nobody asked to leave would be worse.
+    if (ev.target instanceof HTMLMediaElement) return;
+
+    ev.preventDefault();
+    this.stepViewer(delta);
+  }
+
+  /** Move to the neighbouring photo, if there is one. */
+  stepViewer(delta) {
+    const item = this.state.viewing;
+    if (!item) return;
+    const next = neighbourOf(this.visibleItems(), item.id, delta);
+    // Silence at the ends rather than a wrap: arriving back at the first photo
+    // after the last one reads as a glitch.
+    if (next) this.openViewer(next);
   }
 
   closeViewer() {
