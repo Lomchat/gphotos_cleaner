@@ -33,6 +33,17 @@ export const PANEL_CSS = `
   --text-dim: #9b98a6;
   --text-faint: #6d6a78;
 
+  /* Stacking, lowest first.
+     The panel lives inside Google's own page, so the ladder starts at the
+     ceiling of what a page may use and counts up from there. Named, because a
+     bare 2147483002 says nothing about what it has to sit above — the viewer
+     was written as 2147483001, which is the panel's rung, leaving it *under*
+     the sorting view it opens from and behind an opaque background. */
+  --z-badge: 2147483000;
+  --z-panel: 2147483001;
+  --z-modal: 2147483002;
+  --z-viewer: 2147483003;
+
   /* accents */
   --amber: #ffc14d;
   --coral: #ff7a5e;
@@ -75,7 +86,7 @@ export const PANEL_CSS = `
   position: fixed;
   top: 72px;
   right: 16px;
-  z-index: 2147483000;
+  z-index: var(--z-badge);
   display: flex;
   align-items: center;
   gap: 9px;
@@ -161,7 +172,7 @@ export const PANEL_CSS = `
   top: 0; right: 0; bottom: 0;
   width: 440px;
   max-width: 100vw;
-  z-index: 2147483001;
+  z-index: var(--z-panel);
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -581,7 +592,7 @@ select:focus-visible, input:focus-visible, button:focus-visible {
 .modal {
   position: fixed;
   inset: 0;
-  z-index: 2147483002;
+  z-index: var(--z-modal);
   display: flex;
   flex-direction: column;
   background: var(--ink);
@@ -833,7 +844,7 @@ footer .buttons button { flex: 1; }
 
 /* --------------------------------------------------------- the full view */
 
-.viewer { position: fixed; inset: 0; z-index: 2147483001; }
+.viewer { position: fixed; inset: 0; z-index: var(--z-viewer); }
 .viewer .backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.82); }
 .viewer .sheet {
   position: absolute;

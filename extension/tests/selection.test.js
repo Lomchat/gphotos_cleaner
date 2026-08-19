@@ -463,3 +463,52 @@ test('nothing else claims the corner the bar occupies', () => {
   // The video badge sat at bottom-right, under the facts.
   assert.match(rule('.thumb.video::after'), /display:\s*none/);
 });
+
+/* --------------------------------------------------------- what sits above what */
+
+/**
+ * The viewer opens from inside the sorting grid, so it is by definition the
+ * innermost thing on screen. It was written with the panel's z-index, which
+ * put it *under* the modal — and the modal has an opaque background, so the
+ * photo was rendered exactly where nobody could see it.
+ *
+ * These raw numbers are near the ceiling of what a page may use and are
+ * indistinguishable at a glance, which is how the wrong rung got copied. The
+ * ladder is named now, and the order is asserted rather than left to whoever
+ * reads four nine-digit numbers carefully enough.
+ */
+function layer(name) {
+  const m = new RegExp(String.raw`--z-${name}:\s*(\d+)`).exec(PANEL_CSS);
+  assert.ok(m, `--z-${name} is not defined`);
+  return Number(m[1]);
+}
+
+test('the layers are a strict ladder, in the order they overlap', () => {
+  const badge = layer('badge');
+  const panel = layer('panel');
+  const modal = layer('modal');
+  const viewer = layer('viewer');
+  assert.ok(badge < panel, 'the panel covers the badge that opens it');
+  assert.ok(panel < modal, 'the sorting view covers the panel');
+  assert.ok(modal < viewer, 'and the viewer covers the sorting view it opens from');
+});
+
+test('no two layers share a rung', () => {
+  // The original bug: the viewer was given the panel's number, which reads as
+  // deliberate and is impossible to spot by eye.
+  const values = ['badge', 'panel', 'modal', 'viewer'].map(layer);
+  assert.equal(new Set(values).size, values.length, `duplicate z-index: ${values.join(', ')}`);
+});
+
+test('nothing hard-codes a raw stacking number any more', () => {
+  // A literal 2147483002 tells the next reader nothing about what it must sit
+  // above, which is exactly how this went wrong.
+  const stray = [...PANEL_CSS.matchAll(/z-index:\s*(214748\d+)/g)].map((m) => m[1]);
+  assert.deepEqual(stray, [], `raw z-index values left in the stylesheet: ${stray.join(', ')}`);
+});
+
+test('the viewer covers the whole window, not a corner of it', () => {
+  const rule = PANEL_CSS.slice(PANEL_CSS.indexOf('.viewer {'), PANEL_CSS.indexOf('}', PANEL_CSS.indexOf('.viewer {')));
+  assert.match(rule, /position:\s*fixed/);
+  assert.match(rule, /inset:\s*0/);
+});

@@ -217,7 +217,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 639 tests, no dependencies
+npm test        # 643 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.
