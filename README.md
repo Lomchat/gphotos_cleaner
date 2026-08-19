@@ -69,7 +69,8 @@ the click is acknowledged straight away, and whatever was read is kept.
 
 The work happens in the full-screen view: criteria on the left, orders across
 the top, thumbnails filling the rest. Each tile shows when the photo was taken
-and what it costs, with a button to see it full size — videos play.
+and what it costs. **Right-click any photo** to see it full size — videos play
+— or use the button in its corner.
 
 With no criterion ticked you are browsing the whole library and nothing is
 selected. Tick one and everything it matches is selected for you. The number
@@ -217,7 +218,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 643 tests, no dependencies
+npm test        # 647 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

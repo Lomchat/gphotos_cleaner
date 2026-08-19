@@ -786,7 +786,20 @@ export class Panel {
         'data-index': index,
         title: `${formatDate(item.ts, item.precision || 'day')}\n${(item.matched || []).map((m) => CRITERION_LABELS[m]).join(', ')}`,
         onmouseenter: () => this.previewRange(index),
-        onclick: (ev) => this.pickThumb(item.id, index, ev.shiftKey)
+        onclick: (ev) => this.pickThumb(item.id, index, ev.shiftKey),
+        // Right-click opens the photo, the same as the button in the corner.
+        // Judging a grid means looking closely at a lot of them, and reaching
+        // for a 22px target that only appears on hover is the slow way to do
+        // that — while the whole tile is already under the pointer.
+        //
+        // It costs the browser's own menu on these tiles, which is the honest
+        // trade: "open image in a new tab" would hand you a 176px thumbnail
+        // anyway, and the viewer shows the full-size rendition. `click` does
+        // not fire for the secondary button, so this cannot also tick.
+        oncontextmenu: (ev) => {
+          ev.preventDefault();
+          this.openViewer(item);
+        }
       },
       item.url ? el('img', { src: item.url, loading: 'lazy', referrerPolicy: 'no-referrer' }) : null,
       el('span', { class: 'mark', text: on ? '✓' : '' }),

@@ -512,3 +512,36 @@ test('the viewer covers the whole window, not a corner of it', () => {
   assert.match(rule, /position:\s*fixed/);
   assert.match(rule, /inset:\s*0/);
 });
+
+/* ------------------------------------------------------- opening by right-click */
+
+test('right-clicking a tile opens it', () => {
+  // The button in the corner is 22px and only appears on hover. Judging a grid
+  // means looking closely at a great many photos, and the whole tile is
+  // already under the pointer.
+  const start = PANEL_SOURCE.indexOf('  buildThumb(item, index = 0) {');
+  const block = PANEL_SOURCE.slice(start, PANEL_SOURCE.indexOf('item.url ?', start));
+  assert.match(block, /oncontextmenu:/);
+  assert.match(block, /this\.openViewer\(item\)/);
+});
+
+test('the browser menu does not also appear', () => {
+  // Left alone it would open over the photo the viewer is about to show.
+  const start = PANEL_SOURCE.indexOf('oncontextmenu:');
+  const handler = PANEL_SOURCE.slice(start, start + 160);
+  assert.match(handler, /ev\.preventDefault\(\)/);
+});
+
+test('right-clicking never ticks the photo as well', () => {
+  // `click` does not fire for the secondary button, so the two gestures cannot
+  // collide — but the handler must not call pickThumb itself either.
+  const start = PANEL_SOURCE.indexOf('oncontextmenu:');
+  const handler = PANEL_SOURCE.slice(start, start + 160);
+  assert.equal(/pickThumb/.test(handler), false);
+});
+
+test('the corner button stays', () => {
+  // Right-click is a shortcut, not a replacement: nothing on screen announces
+  // it, and a feature with no visible affordance is one most people never find.
+  assert.match(PANEL_SOURCE, /class: 'zoom'/);
+});
