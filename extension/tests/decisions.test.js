@@ -65,9 +65,11 @@ test('hidden decisions narrow what the filters see, not what they mean', () => {
   // predicate would have to be added to every criterion and to the counter,
   // and the two would drift; one pool cannot.
   const body = methodBody('recompute');
-  assert.match(body, /const pool = this\.state\.settings\.hideKept/);
+  assert.match(body, /hideKept/);
   assert.match(body, /countPerCriterion\(pool,/);
   assert.match(body, /applyFilters\(pool,/);
+  assert.match(body, /const pool = applyLens\(/,
+    'the lens narrows the same pool, for the same reason');
 });
 
 test('the duplicate cache knows the pool changed under it', () => {

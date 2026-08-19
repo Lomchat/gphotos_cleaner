@@ -475,6 +475,18 @@ button.action.wide { width: 100%; }
   font: 700 11px/1.2 var(--display);
   color: var(--text-dim);
 }
+
+/* Inside a chip it is a suffix, not a badge: the pill-in-a-pill the standalone
+   rule would give, plus its margin-left:auto, pushes the label off centre. */
+.chip .count {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-weight: 400;
+  opacity: .65;
+}
+.chip[aria-pressed="true"] .count { opacity: .8; }
 .filter > label input:checked ~ .count {
   background: rgba(255,193,77,.14);
   border-color: rgba(255,193,77,.4);

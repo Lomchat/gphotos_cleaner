@@ -74,9 +74,16 @@ and what it costs. **Right-click any photo** to see it full size — videos play
 the order it is showing, the **wheel zooms towards the cursor**, dragging moves
 a zoomed photo, a double-click fits it again, and **Escape** closes it.
 
+**Everything / Photos / Videos** sits at the head of the column and decides
+what the criteria below it are even looking at. It is a lens rather than a
+criterion on purpose: criteria combine, and in the default *any* mode they
+union — so a "videos" checkbox ticked beside "blurry" would give *videos or
+blurry photos*, which is the opposite of what "only videos" means.
+
 With no criterion ticked you are browsing the whole library and nothing is
 selected. Tick one and everything it matches is selected for you. The number
-beside each criterion is exactly what ticking it would select.
+beside each criterion is exactly what ticking it would select — including
+through the lens, since both read the same pool.
 
 **Orders are a reason to look, not a filter** — they change where a photo sits,
 never whether it is selected. Three of them split the grid into blocks you can
@@ -220,7 +227,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 677 tests, no dependencies
+npm test        # 694 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

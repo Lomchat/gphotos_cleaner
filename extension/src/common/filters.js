@@ -136,6 +136,34 @@ export function pickKeepers(groups, byId, strategy = 'sharpest') {
   return keep;
 }
 
+/* ----------------------------------------------------------------- lenses */
+
+/**
+ * Restrict the pool to photos or to videos.
+ *
+ * Deliberately not a criterion. Criteria are combined — in the default "any"
+ * mode they union — so a "videos" checkbox ticked beside "blurry" would give
+ * *videos or blurry photos*, which is the opposite of what "only videos"
+ * says. A lens narrows what every criterion then sees, so "only" means only.
+ *
+ * It also keeps the invariant the whole panel rests on: the number beside a
+ * criterion equals what ticking it selects. Both read the pool this returns.
+ */
+export const MEDIA_LENSES = ['all', 'photo', 'video'];
+
+export function applyLens(items, lens) {
+  if (lens === 'video') return items.filter((it) => it.isVideo);
+  if (lens === 'photo') return items.filter((it) => !it.isVideo);
+  return items;
+}
+
+/** How many photos and videos a catalogue holds, for the lens buttons. */
+export function countMedia(items) {
+  let videos = 0;
+  for (const it of items) if (it.isVideo) videos++;
+  return { all: items.length, video: videos, photo: items.length - videos };
+}
+
 /* --------------------------------------------------------------- filters */
 
 /**

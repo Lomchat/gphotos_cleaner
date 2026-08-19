@@ -25,7 +25,8 @@ import {
 import {
   DEFAULT_FILTERS, applyFilters, clusterDuplicates, pickKeepers,
   countPerCriterion, computeStats, CRITERION_LABELS,
-  SORTS, SORT_KEYS, groupSizeMap, itemBytes, sectionsForSort
+  SORTS, SORT_KEYS, groupSizeMap, itemBytes, sectionsForSort,
+  MEDIA_LENSES, applyLens, countMedia
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
 import { groupLabel, SHIPPED_EPS } from '../analysis/cluster.js';
@@ -77,6 +78,10 @@ const DEFAULT_SETTINGS = {
   // this the tool is a one-off: keep eighteen hundred of two thousand, and the
   // next visit offers the same eighteen hundred again.
   hideKept: true,
+  // 'all' | 'photo' | 'video'. A lens rather than a criterion — see applyLens:
+  // criteria union in the default mode, so "only videos" as a checkbox would
+  // have meant "videos or whatever else is ticked".
+  mediaLens: 'all',
   lastAnalysisSplit: null, // where the per-photo work actually goes
   peopleEps: SHIPPED_EPS // how alike two faces must be to count as one person
 };
@@ -636,6 +641,7 @@ export class Panel {
     // Left column: exactly the same controls as the panel. Duplicating their
     // definition would make them diverge on the first addition.
     const side = el('aside', { class: 'side' },
+      this.buildMediaLens(),
       el('h3', {}, 'Combine'),
       el('div', { class: 'row', style: 'flex-wrap:wrap; gap:6px; margin-bottom:14px' },
         el('button', {
@@ -1309,7 +1315,8 @@ export class Panel {
     if (!f.enabled.duplicates && f.sort !== 'similar') {
       return { selectable: new Set(), groups: new Map(), keepers: new Set() };
     }
-    const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}|${this.state.settings.hideKept}`;
+    const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}`
+      + `|${this.state.settings.hideKept}|${this.state.settings.mediaLens}`;
     if (!this.dupCache || this.dupCache.key !== key) {
       const groups = clusterDuplicates(this.state.items, {
         distance: f.dupDistance, window: f.dupWindow
@@ -1335,9 +1342,10 @@ export class Panel {
     // Decisions are honoured by narrowing what the filters see, not by adding
     // a predicate: the counter beside a criterion has to equal what ticking it
     // selects, and both read this same pool.
-    const pool = this.state.settings.hideKept
+    const decided = this.state.settings.hideKept
       ? this.state.items.filter((it) => !it.kept)
       : this.state.items;
+    const pool = applyLens(decided, this.state.settings.mediaLens);
     this.state.keptCount = this.state.items.length - this.state.items.filter((it) => !it.kept).length;
 
     const dup = this.duplicateSelection();
@@ -2318,6 +2326,42 @@ export class Panel {
         el('div', { class: 'kpis', style: 'margin-top:12px; grid-template-columns:repeat(2,1fr)' },
           kpi(nf(this.state.selection.size), 'ticked', ton),
           kpi(nf(total - retenus), 'kept', 'good'))));
+  }
+
+  /**
+   * Photos, videos, or both.
+   *
+   * At the head of the column because it decides what every criterion below it
+   * is even looking at. The counts are on the buttons: "Videos 223" answers the
+   * question people actually have before pressing it, and a lens that would
+   * empty the grid says so rather than demonstrating it.
+   */
+  buildMediaLens() {
+    const s = this.state.settings;
+    const counts = countMedia(
+      s.hideKept ? this.state.items.filter((it) => !it.kept) : this.state.items
+    );
+    const labels = { all: 'Everything', photo: 'Photos', video: 'Videos' };
+
+    const row = el('div', { class: 'row', style: 'flex-wrap:wrap; gap:6px; margin-bottom:14px' });
+    for (const lens of MEDIA_LENSES) {
+      row.append(el('button', {
+        class: 'chip',
+        'aria-pressed': String(s.mediaLens === lens),
+        disabled: !!this.state.busy,
+        title: lens === 'all'
+          ? 'Photos and videos together'
+          : `Show only ${labels[lens].toLowerCase()}, whatever the criteria say`,
+        onclick: () => {
+          s.mediaLens = lens;
+          this.persist();
+          this.dupCache = null;
+          this.recompute();
+          this.renderAll();
+        }
+      }, labels[lens], el('span', { class: 'count' }, nf(counts[lens]))));
+    }
+    return el('div', {}, el('h3', {}, 'Show'), row);
   }
 
   /** Reset-to-default button, inert while already at the default. */
