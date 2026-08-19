@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 
 import { Panel } from '../src/ui/panel.js';
 import { PANEL_CSS } from '../src/ui/styles.js';
+import { DEFAULT_FILTERS } from '../src/common/filters.js';
 
 /** A Panel stand-in with just the state the selection methods touch. */
 function panel(ids, selected = []) {
@@ -544,4 +545,53 @@ test('the corner button stays', () => {
   // Right-click is a shortcut, not a replacement: nothing on screen announces
   // it, and a feature with no visible affordance is one most people never find.
   assert.match(PANEL_SOURCE, /class: 'zoom'/);
+});
+
+/* ------------------------------------------------- filtering does not select */
+
+/**
+ * A criterion is a guess. The screenshot detector is "fair" by its own README,
+ * blur has a threshold somebody dragged, and "no people" leans on a model.
+ * Switching one on used to tick everything it caught — turning that guess into
+ * a selection, a thousand photos one click from the bin before anyone had
+ * looked at one of them.
+ *
+ * Filtering shows. Selecting is the judgement, and it stays deliberate.
+ */
+test('a filter that matches everything selects nothing', () => {
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  recompute() {');
+  const body = source.slice(start, source.indexOf('  renderAll() {', start));
+  assert.equal(/this\.state\.selection = new Set\(/.test(body), false,
+    'recompute must never build a selection, only shrink one');
+});
+
+test('a selection survives a reorder but not a photo leaving the grid', () => {
+  // Reordering shows the same photos differently, so the ticks stand. A photo
+  // no longer matching has left the answer, and a count that included it would
+  // describe something invisible.
+  const keep = { id: 'stays' };
+  const p = {
+    state: {
+      items: [keep], filtered: [keep], sections: null,
+      selection: new Set(['stays', 'gone']),
+      settings: { hideKept: false, mediaLens: 'all' },
+      counts: {}, people: { groups: [] }, filters: structuredClone(DEFAULT_FILTERS)
+    }
+  };
+  // The narrowing step, as recompute performs it.
+  const visible = new Set(p.state.filtered.map((it) => it.id));
+  for (const id of p.state.selection) if (!visible.has(id)) p.state.selection.delete(id);
+
+  assert.deepEqual([...p.state.selection], ['stays']);
+});
+
+test('taking a whole answer is a button, and it says how many', () => {
+  // The only way to do at once what filtering used to do by itself, so it has
+  // to be findable and it has to state its size.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('Tick all'), source.indexOf('Untick all') + 60);
+  assert.match(block, /nf\(this\.state\.filtered\.length\)/);
+  assert.match(block, /disabled: !this\.state\.filtered\.length/,
+    'and offers nothing when there is nothing to take');
 });

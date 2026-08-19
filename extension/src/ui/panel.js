@@ -691,10 +691,17 @@ export class Panel {
         el('span', { class: 'spacer' }),
         // Repainted, not re-rendered: rebuilding the grid would scroll the
         // user back to the top of a list they were partway through.
-        el('button', { class: 'action', text: 'Tick all', onclick: () => {
-          this.state.selection = new Set(this.state.filtered.map((i) => i.id));
-          this.paintSelection();
-        } }),
+        // Carries its count, because it is now the only way to take a whole
+        // answer at once — filtering stopped doing it, on purpose.
+        el('button', {
+          class: 'action',
+          text: `Tick all${this.state.filtered.length ? ` (${nf(this.state.filtered.length)})` : ''}`,
+          disabled: !this.state.filtered.length,
+          onclick: () => {
+            this.state.selection = new Set(this.state.filtered.map((i) => i.id));
+            this.paintSelection();
+          }
+        }),
         el('button', { class: 'action', text: 'Untick all', onclick: () => {
           this.state.selection = new Set();
           this.paintSelection();
@@ -1383,14 +1390,25 @@ export class Panel {
     if (this.state.sections) {
       this.state.filtered = this.state.sections.flatMap((sec) => sec.items);
     }
-    // With criteria on, everything shown was chosen by a rule, so ticking it
-    // all is the useful default — and any filter change resets it, because a
-    // stale partial selection is a trap.
+    // Filtering shows; it never selects.
     //
-    // With no criterion on, the grid is the whole library and nothing has been
-    // judged. Ticking it would put every photo one click from Google's bin, so
-    // browsing starts empty and the user ticks what they mean.
-    this.state.selection = r.browsing ? new Set() : new Set(r.items.map((i) => i.id));
+    // Switching a criterion on used to tick everything it caught, on the
+    // reasoning that a rule had chosen them. But a criterion is a guess — the
+    // screenshot detector is "fair", blur has a threshold someone dragged —
+    // and turning a guess into a selection puts a thousand photos one click
+    // from the bin before anyone has looked at one of them. Selecting is the
+    // judgement, and it stays the user's. "Tick all" is a button, right there,
+    // for when the rule really is trusted.
+    //
+    // What is kept is narrowed to what is still on screen. A selection may
+    // survive a change of order — the same photos, differently arranged — but
+    // never a photo that has scrolled out of the answer: the footer count and
+    // the weight beside it have to describe something visible, or the
+    // confirmation quotes a number nobody can account for.
+    const visible = new Set(this.state.filtered.map((it) => it.id));
+    for (const id of this.state.selection) {
+      if (!visible.has(id)) this.state.selection.delete(id);
+    }
   }
 
   /* ---------------------------------------------------------------- rendu */
@@ -2105,8 +2123,8 @@ export class Panel {
           kpi(nf(this.state.selection.size), 'ticked')),
         el('div', { class: 'muted tiny', style: 'margin-top:8px' },
           active
-            ? `Ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}". Everything matching is ticked.`
-            : 'No criterion on: the whole library is shown, nothing ticked. Tick photos yourself, or switch a criterion on.'))
+            ? `${nf(this.state.filtered.length)} shown, ordered by "${SORTS[this.state.filters.sort]?.label ?? ''}". Tick the ones to remove.`
+            : 'No criterion on: the whole library is shown. Switch one on to narrow it down.'))
     );
   }
 

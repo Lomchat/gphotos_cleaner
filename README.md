@@ -80,10 +80,17 @@ criterion on purpose: criteria combine, and in the default *any* mode they
 union — so a "videos" checkbox ticked beside "blurry" would give *videos or
 blurry photos*, which is the opposite of what "only videos" means.
 
-With no criterion ticked you are browsing the whole library and nothing is
-selected. Tick one and everything it matches is selected for you. The number
-beside each criterion is exactly what ticking it would select — including
-through the lens, since both read the same pool.
+**Criteria narrow what is shown; they never select anything.** A criterion is
+a guess — the screenshot detector is only "fair", blur has a threshold someone
+dragged — and turning a guess into a selection would put a thousand photos one
+click from the bin before anyone had looked at one. Selecting is the judgement,
+and it stays yours; **Tick all (1,240)** takes a whole answer at once when the
+rule really is trusted.
+
+The number beside each criterion is exactly what ticking it would show —
+including through the lens, since both read the same pool. A selection survives
+a change of order, but never a photo leaving the grid: the count and the weight
+beside it always describe something visible.
 
 **Orders are a reason to look, not a filter** — they change where a photo sits,
 never whether it is selected. Three of them split the grid into blocks you can
@@ -227,7 +234,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 694 tests, no dependencies
+npm test        # 698 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

@@ -355,14 +355,25 @@ test('a blocked criterion only offers a way out when the fix is elsewhere', () =
   assert.ok(gate < button, 'the gate must come before the button it guards');
 });
 
-test('browsing never arrives with photos already ticked', () => {
-  // With criteria on, everything shown was chosen by a rule and ticking it all
-  // is useful. With none on, the grid is the whole library and nothing has been
-  // judged — ticking it would put every photo one click from Google's bin.
+test('filtering shows, and never selects', () => {
+  // Switching a criterion on used to tick everything it caught. But a
+  // criterion is a guess — the screenshot detector is "fair", blur has a
+  // threshold someone dragged — and turning a guess into a selection puts a
+  // thousand photos one click from the bin before anyone has looked at one.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   const body = methodBody(source, 'recompute');
-  assert.match(body, /r\.browsing\s*\?\s*new Set\(\)/,
-    'recompute must leave the selection empty while browsing');
+  assert.equal(/selection = new Set\(r\.items/.test(body), false,
+    'recompute must never fill the selection from what a filter matched');
+  assert.equal(/selection = new Set\(this\.state\.filtered/.test(body), false);
+});
+
+test('a selection never outlives what is on screen', () => {
+  // The footer count and the weight beside it have to describe something
+  // visible, or the confirmation quotes a number nobody can account for.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'recompute');
+  assert.match(body, /const visible = new Set\(this\.state\.filtered\.map/);
+  assert.match(body, /if \(!visible\.has\(id\)\) this\.state\.selection\.delete\(id\)/);
 });
 
 test('the similarity slider writes to the setting, not to the filters', () => {
