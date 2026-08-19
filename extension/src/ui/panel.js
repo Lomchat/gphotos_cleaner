@@ -7,6 +7,10 @@
  */
 
 import { PANEL_CSS } from './styles.js';
+import {
+  MIN_SCALE, wheelPixels, scaleAfterWheel, zoomAbout, clampPan,
+  resetView, transformFor
+} from './viewer-zoom.js';
 import * as db from '../content/db.js';
 import { ApiScanner, readCursor, resetCursor } from '../content/api-scanner.js';
 import { Analyzer } from '../content/analyze-client.js';
@@ -865,6 +869,7 @@ export class Panel {
     this.state.viewing = item;
 
     const close = () => this.closeViewer();
+    const stage = el('div', { class: 'stage' });
     const media = item.isVideo
       ? el('video', {
           src: `${base}=m18`,
@@ -872,6 +877,8 @@ export class Panel {
           controls: true, autoplay: true, playsInline: true
         })
       : el('img', { src: `${base}=w1600-h1600`, referrerPolicy: 'no-referrer' });
+
+    this.bindViewerZoom(stage, media);
 
     // Held so a tick can repaint it. Rebuilding the sheet would rebuild the
     // <video> with it, and playback would jump back to the start — the same
@@ -900,7 +907,7 @@ export class Panel {
           // rather than behind a close button.
           this.viewerTickButton,
           el('button', { class: 'icon-btn', text: '✕', title: 'Close (Esc)', onclick: close })),
-        el('div', { class: 'stage' }, media),
+        put(stage, media, (this.viewerZoomLabel = el('span', { class: 'zoom-level' }))),
         el('footer', {},
           el('a', {
             class: 'action',
@@ -915,10 +922,92 @@ export class Panel {
     this.viewer.hidden = false;
   }
 
+  /**
+   * Wheel to zoom, drag to move, double-click to fit.
+   *
+   * All three live here rather than in `openViewer` because that method is
+   * already long enough to hide something, and this is the part with state in
+   * it — a view that is not reset per photo would open the next one at 6x,
+   * somewhere off-centre, showing a corner of something with no clue why.
+   */
+  bindViewerZoom(stage, media) {
+    let view = resetView();
+    let drag = null;
+
+    const apply = () => {
+      // Measured, not assumed: `object-fit: contain` means the picture is
+      // rarely the size of the stage it sits in, and clamping against the
+      // stage would let a tall photo be dragged out of sight.
+      view = clampPan(view, {
+        mediaW: media.offsetWidth,
+        mediaH: media.offsetHeight,
+        stageW: stage.clientWidth,
+        stageH: stage.clientHeight
+      });
+      media.style.transform = transformFor(view);
+      stage.classList.toggle('zoomed', view.scale > MIN_SCALE);
+      if (this.viewerZoomLabel) {
+        this.viewerZoomLabel.textContent = view.scale > MIN_SCALE
+          ? `${view.scale.toFixed(1)}×`
+          : '';
+      }
+    };
+
+    stage.addEventListener('wheel', (ev) => {
+      // Without this the grid behind the viewer scrolls, so closing it would
+      // land the user somewhere else in a list they were working through.
+      ev.preventDefault();
+      const box = stage.getBoundingClientRect();
+      view = zoomAbout(
+        view,
+        scaleAfterWheel(view.scale, wheelPixels(ev)),
+        ev.clientX - box.left - box.width / 2,
+        ev.clientY - box.top - box.height / 2
+      );
+      apply();
+    }, { passive: false });
+
+    stage.addEventListener('pointerdown', (ev) => {
+      // Only when there is somewhere to go. Otherwise a click on a video's
+      // controls would be swallowed as the start of a drag.
+      if (view.scale <= MIN_SCALE || ev.button !== 0) return;
+      drag = { x: ev.clientX - view.x, y: ev.clientY - view.y };
+      stage.setPointerCapture(ev.pointerId);
+    });
+
+    stage.addEventListener('pointermove', (ev) => {
+      if (!drag) return;
+      view = { ...view, x: ev.clientX - drag.x, y: ev.clientY - drag.y };
+      apply();
+    });
+
+    const endDrag = (ev) => {
+      if (!drag) return;
+      drag = null;
+      stage.releasePointerCapture?.(ev.pointerId);
+    };
+    stage.addEventListener('pointerup', endDrag);
+    stage.addEventListener('pointercancel', endDrag);
+
+    // Back to fitted. A zoom with no way out but the wheel is one people
+    // scroll at until it gives up.
+    stage.addEventListener('dblclick', (ev) => {
+      ev.preventDefault();
+      view = resetView();
+      apply();
+    });
+
+    // The laid-out size is only known once the picture has arrived, and the
+    // clamp depends on it.
+    media.addEventListener('load', apply);
+    media.addEventListener('loadedmetadata', apply);
+  }
+
   closeViewer() {
     this.state.viewing = null;
     this.viewerTickButton = null;
     this.viewerTickId = null;
+    this.viewerZoomLabel = null;
     // Emptied, not merely hidden: a hidden <video> keeps playing.
     this.viewer.replaceChildren();
     this.viewer.hidden = true;

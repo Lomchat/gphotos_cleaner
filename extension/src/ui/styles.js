@@ -871,12 +871,40 @@ footer .buttons button { flex: 1; }
   border-radius: var(--r-sm);
   overflow: hidden;
 }
+.viewer .stage {
+  position: relative;
+  /* The picture is moved with a transform, which paints outside its box:
+     without this a zoomed photo spills over the header and the footer. */
+  overflow: hidden;
+  touch-action: none;
+}
 .viewer .stage img, .viewer .stage video {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   display: block;
+  transform-origin: center;
+  /* No transition: the transform follows a wheel and a pointer, and easing an
+     interaction that is already continuous only makes it lag behind. */
+  will-change: transform;
 }
+.viewer .stage.zoomed { cursor: grab; }
+.viewer .stage.zoomed:active { cursor: grabbing; }
+
+/* Only while zoomed, so the reading of a fitted photo is never covered. */
+.viewer .zoom-level {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.62);
+  color: #fff;
+  font: 600 11px/1.5 var(--mono);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.viewer .zoom-level:empty { display: none; }
 .viewer footer { display: flex; gap: 8px; }
 .viewer footer .action { text-decoration: none; }
 
