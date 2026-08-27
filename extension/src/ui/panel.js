@@ -74,6 +74,22 @@ const PROGRESS_KEY = 'gpc:progress';
  */
 const PROTECTED_KEY = 'gpc:protected';
 
+/**
+ * Individual photographs that are never to be offered.
+ *
+ * The companion to protecting a person, and deliberately not the same thing as
+ * "keep the rest". A decision means *I have looked at this one* — it is bulk,
+ * it belongs to a pass through the library, and clearing the catalogue clears
+ * it because it describes work rather than intent. This means *never offer
+ * this*, one photograph at a time, and it outlives a reset for the same reason
+ * the people list does: nothing can reconstruct it.
+ *
+ * Enough is stored to show the photograph in the Protected tab even before the
+ * library has been listed again — after a reset the ids would otherwise name
+ * nothing. About 120 bytes each, so a thousand of them is 120 KB.
+ */
+const PROTECTED_PHOTOS_KEY = 'gpc:protectedPhotos';
+
 const DEFAULT_SETTINGS = {
   // 176px: perceptual hashes and the sharp/blurry ordering are stable at this
   // scale (verified by tests) for about half the bytes of 256px — and transfer
@@ -389,6 +405,8 @@ export class Panel {
       progress: null,
       // People whose photos are never offered. Survives a reset too.
       protect: [],
+      // Individual photographs, likewise. `[{ id, url, ts, at }]`.
+      protectPhotos: [],
       // Faces found in the photo currently open, for the strip under it.
       viewingFaces: [],
       // The photo being looked at full size, if any.
@@ -461,10 +479,14 @@ export class Panel {
 
   async loadPersisted() {
     try {
-      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY, PROGRESS_KEY, PROTECTED_KEY]);
+      const got = await storageGet([
+        SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY, PROGRESS_KEY,
+        PROTECTED_KEY, PROTECTED_PHOTOS_KEY
+      ]);
       if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
       if (got[PROGRESS_KEY]) this.state.progress = got[PROGRESS_KEY];
       if (Array.isArray(got[PROTECTED_KEY])) this.state.protect = got[PROTECTED_KEY];
+      if (Array.isArray(got[PROTECTED_PHOTOS_KEY])) this.state.protectPhotos = got[PROTECTED_PHOTOS_KEY];
       if (Array.isArray(got[PEOPLE_KEY])) {
         // Only names and centroids persist. Groups themselves are rebuilt from
         // the stored faces, because their ids are positional.
@@ -774,6 +796,17 @@ export class Panel {
           })),
           el('button', {
             class: 'action',
+            text: `Protect${n ? ` (${nf(n)})` : ''}`,
+            title: 'Never offer the ticked photographs again — kept even through a reset',
+            disabled: !!this.state.busy || !n,
+            onclick: () => {
+              const ids = this.state.selection;
+              this.closeModal();
+              this.protectPhoto(this.state.items.filter((it) => ids.has(it.id)));
+            }
+          }),
+          el('button', {
+            class: 'action',
             text: 'Keep the rest',
             title: 'Mark everything shown but not ticked as decided, so it stays out of the next run',
             disabled: !!this.state.busy || !this.state.filtered.length,
@@ -1005,6 +1038,14 @@ export class Panel {
               item.width && item.height ? `${item.width}×${item.height}` : null]
               .filter(Boolean).join(' · ')),
           el('span', { class: 'spacer' }),
+          this.state.protectedIds?.has(item.id)
+            ? el('span', { class: 'muted tiny' }, '✓ protected')
+            : el('button', {
+                class: 'action',
+                text: 'Protect photo',
+                title: 'Never offer this photograph again — kept even through a reset',
+                onclick: () => this.protectPhoto(item)
+              }),
           at === -1 ? null : el('span', { class: 'muted tiny' }, `${nf(at + 1)} / ${nf(shown.length)}`),
           step(-1),
           step(1),
@@ -1466,7 +1507,8 @@ export class Panel {
     }
     const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}`
       + `|${this.state.settings.hideKept}|${this.state.settings.mediaLens}`
-      + `|${this.state.settings.hideProtected}|${this.state.protect.length}`;
+      + `|${this.state.settings.hideProtected}|${this.state.protect.length}`
+      + `|${this.state.protectPhotos.length}`;
     if (!this.dupCache || this.dupCache.key !== key) {
       const groups = clusterDuplicates(this.state.items, {
         distance: f.dupDistance, window: f.dupWindow
@@ -1495,8 +1537,11 @@ export class Panel {
     const decided = this.state.settings.hideKept
       ? this.state.items.filter((it) => !it.kept)
       : this.state.items;
+    // One set, looked up rather than searched: this runs on every render and
+    // the list can hold thousands.
+    this.state.protectedIds = new Set(this.state.protectPhotos.map((p) => p.id));
     const guarded = this.state.settings.hideProtected
-      ? decided.filter((it) => !it.protectedBy)
+      ? decided.filter((it) => !it.protectedBy && !this.state.protectedIds.has(it.id))
       : decided;
     this.state.protectedCount = decided.length - guarded.length;
     const pool = applyLens(guarded, this.state.settings.mediaLens);
@@ -2246,17 +2291,19 @@ export class Panel {
     const t = this.tabs.protect;
     t.replaceChildren();
     const list = this.state.protect;
+    const photos = this.state.protectPhotos;
     const s = this.state.settings;
 
-    if (!list.length) {
+    if (!list.length && !photos.length) {
       put(t,
         el('div', { class: 'hero' },
           el('div', { class: 'hero-side' },
             el('div', { class: 'hero-title' }, 'Nobody is protected'),
             el('div', { class: 'hero-sub' },
-              'Open any photo from the sorting view — the faces in it appear along the '
-              + 'bottom, each with a Protect button. Protected people are never offered '
-              + 'for deletion, and this list survives a reset.'))));
+              'Open any photo from the sorting view. The faces in it appear along the '
+              + 'bottom, each with a Protect button, and the photograph itself can be '
+              + 'protected from the same place. Neither is ever offered for deletion '
+              + 'again, and this list survives a reset.'))));
       return;
     }
 
@@ -2272,12 +2319,15 @@ export class Panel {
 
     put(t,
       el('section', {},
-        el('h2', {}, 'Protected people'),
+        el('h2', {}, 'Never offered'),
         el('div', { class: 'kpis' },
           kpi(nf(list.length), 'people'),
-          kpi(nf(total), 'photos held back', total ? 'good' : '')),
+          kpi(nf(total), 'photos of them', total ? 'good' : ''),
+          kpi(nf(photos.length), 'single photos', photos.length ? 'good' : '')),
         el('div', { class: 'muted tiny', style: 'margin-top:8px' },
-          'Kept even if you reset the extension — this is the one list a reset does not clear.')));
+          'Kept even if you reset the extension. Distinct from the decisions the '
+          + 'sorting view records: those say "I have looked at this", and clearing '
+          + 'the catalogue clears them.')));
 
     const cards = el('div', { class: 'guard-list' });
     list.forEach((person, i) => {
@@ -2308,7 +2358,33 @@ export class Panel {
           onclick: () => this.unprotect(person.id)
         })));
     });
-    put(t, el('section', {}, cards));
+    if (list.length) put(t, el('section', {}, el('h2', {}, 'People'), cards));
+
+    if (photos.length) {
+      const grid = el('div', { class: 'grid' });
+      // Newest first: the one just protected is the one being checked.
+      [...photos].reverse().forEach((entry) => {
+        // The live catalogue when it has the photo, the stored copy when it
+        // does not — which is the case after a reset, before a fresh listing.
+        const live = this.state.byId?.get(entry.id);
+        const url = live?.url || (entry.url ? `${entry.url}=w176-h176` : null);
+        grid.append(el('div', { class: 'thumb' },
+          url ? el('img', { src: url, loading: 'lazy', referrerPolicy: 'no-referrer' }) : null,
+          el('button', {
+            class: 'zoom', text: '✕',
+            title: 'Offer this photograph again',
+            onclick: () => this.unprotectPhoto(entry.id)
+          }),
+          el('span', { class: 'overlay' },
+            el('span', { class: 'facts' },
+              el('b', {}, entry.ts == null ? 'no date' : formatDate(entry.ts))))));
+      });
+      put(t, el('section', {},
+        el('h2', {}, 'Single photos'),
+        grid,
+        el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+          'Protected one at a time, from the full-size view.')));
+    }
 
     put(t, el('section', {},
       el('div', { class: 'card' },
@@ -3675,11 +3751,11 @@ export class Panel {
     }
     try {
       await db.clearAll();
-      // PROGRESS_KEY and PROTECTED_KEY are absent on purpose. Neither can be
-      // recovered by running again: one is a record of work done, the other a
-      // list of decisions about people. A reset that dropped the second would
-      // leave the next run offering exactly the photos it was told never to
-      // touch. Both have their own way to be forgotten.
+      // PROGRESS_KEY, PROTECTED_KEY and PROTECTED_PHOTOS_KEY are absent on
+      // purpose. None can be recovered by running again: one is a record of
+      // work done, the other two are decisions about people and photographs. A
+      // reset that dropped them would leave the next run offering exactly what
+      // it was told never to touch. Each has its own way to be forgotten.
       await storageRemove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
     } catch (err) {
       this.flashStatus(`Reset failed: ${err.message}`, 'error', 8000);
@@ -4132,6 +4208,53 @@ export class Panel {
       'done', 6000
     );
     this.renderAll();
+  }
+
+  /**
+   * Never offer these photographs again.
+   *
+   * No regroup needed, unlike protecting a person: this is a list of ids, not
+   * an identity to recognise, so the effect is immediate.
+   */
+  async protectPhoto(items) {
+    const list = (Array.isArray(items) ? items : [items]).filter(Boolean);
+    if (!list.length) return;
+    const known = new Set(this.state.protectPhotos.map((p) => p.id));
+    const now = Date.now();
+    const added = list
+      .filter((it) => !known.has(it.id))
+      // The url and date travel with the id so the Protected tab can show the
+      // photograph even after a reset, when the catalogue no longer holds it.
+      .map((it) => ({
+        id: it.id,
+        url: (it.urlRaw || it.url || '').split('=')[0] || null,
+        ts: it.ts ?? null,
+        at: now
+      }));
+    if (!added.length) return;
+
+    this.state.protectPhotos = [...this.state.protectPhotos, ...added];
+    await this.persistProtectedPhotos();
+    this.recompute();
+    this.flashStatus(
+      added.length === 1
+        ? 'Photo protected — it will not be offered again'
+        : `${nf(added.length)} photos protected`,
+      'done', 5000
+    );
+    this.renderAll();
+  }
+
+  async unprotectPhoto(id) {
+    this.state.protectPhotos = this.state.protectPhotos.filter((p) => p.id !== id);
+    await this.persistProtectedPhotos();
+    this.recompute();
+    this.renderAll();
+  }
+
+  persistProtectedPhotos() {
+    return storageSet({ [PROTECTED_PHOTOS_KEY]: this.state.protectPhotos })
+      .catch((err) => this.noteContext(err));
   }
 
   /** Lift a protection. The photos come back on the next regroup. */

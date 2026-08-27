@@ -355,3 +355,89 @@ test('quiet only silences the busy state', () => {
   const body = SOURCE.slice(start, SOURCE.indexOf('  async rereadAllFaces('));
   assert.match(body, /if \(!quiet\) \{[\s\S]{0,200}busy = 'people'/);
 });
+
+/* ------------------------------------------------- protecting one photograph */
+
+/**
+ * The companion to protecting a person, and deliberately not the same thing as
+ * the decisions the sorting view records.
+ *
+ * A decision means *I have looked at this one*: it is bulk, it belongs to a
+ * pass through the library, and clearing the catalogue clears it because it
+ * describes work rather than intent. This means *never offer this*, and it
+ * outlives a reset for the same reason the people list does — nothing can
+ * reconstruct it.
+ */
+test('protecting a photo keeps it out of the grid at once', () => {
+  // No regroup, unlike a person: this is a list of ids rather than an identity
+  // to recognise, so nothing has to be recomputed for it to take effect.
+  const body = SOURCE.slice(SOURCE.indexOf('  async protectPhoto('), SOURCE.indexOf('  async unprotectPhoto('));
+  assert.match(body, /this\.recompute\(\)/);
+  assert.equal(/rebuildGroups/.test(body), false, 'an id needs no clustering');
+});
+
+test('the same photo is never protected twice', () => {
+  const body = SOURCE.slice(SOURCE.indexOf('  async protectPhoto('), SOURCE.indexOf('  async unprotectPhoto('));
+  assert.match(body, /const known = new Set\(this\.state\.protectPhotos\.map/);
+  assert.match(body, /!known\.has\(it\.id\)/);
+});
+
+test('enough is kept to show the photo after a reset', () => {
+  // The list survives, the catalogue does not. Ids alone would name nothing
+  // until the library had been listed again.
+  const body = SOURCE.slice(SOURCE.indexOf('  async protectPhoto('), SOURCE.indexOf('  async unprotectPhoto('));
+  assert.match(body, /url: \(it\.urlRaw \|\| it\.url \|\| ''\)\.split\('='\)\[0\]/);
+  assert.match(body, /ts: it\.ts/);
+});
+
+test('protected photos narrow the same pool everything else does', () => {
+  const start = SOURCE.indexOf('  recompute() {');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  renderAll() {', start));
+  assert.match(body, /this\.state\.protectedIds\.has\(it\.id\)/);
+  assert.match(body, /new Set\(this\.state\.protectPhotos\.map/,
+    'a set, because this runs on every render over a list that can hold thousands');
+});
+
+test('the duplicate cache notices the list changing', () => {
+  const start = SOURCE.indexOf('  duplicateSelection() {');
+  const body = SOURCE.slice(start, start + 1000);
+  assert.match(body, /protectPhotos\.length/);
+});
+
+test('the reset spares photographs as well as people', () => {
+  const body = SOURCE.slice(SOURCE.indexOf('async factoryReset()'), SOURCE.indexOf('async exportJson()'));
+  assert.equal(/storageRemove\(\[[^\]]*PROTECTED_PHOTOS_KEY/.test(body), false);
+  assert.equal(/this\.state\.protectPhotos = \[\]/.test(body), false);
+});
+
+test('one can be protected while looking at it, and many at once', () => {
+  // Fifty photographs should not mean opening fifty viewers.
+  assert.match(SOURCE, /text: 'Protect photo'/);
+  assert.match(SOURCE, /text: `Protect\$\{n \? ` \(\$\{nf\(n\)\}\)` : ''\}`/);
+});
+
+test('a photo already protected offers no second protection', () => {
+  const start = SOURCE.indexOf("this.state.protectedIds?.has(item.id)");
+  assert.notEqual(start, -1);
+  assert.match(SOURCE.slice(start, start + 200), /✓ protected/);
+});
+
+test('the tab shows them, and the way back', () => {
+  const start = SOURCE.indexOf('  renderProtected() {');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  /* ------------------------------------------------------------ onglet 2 */'));
+  assert.match(body, /Single photos/);
+  assert.match(body, /unprotectPhoto\(entry\.id\)/);
+  assert.match(body, /this\.state\.byId\?\.get\(entry\.id\)/,
+    'the live catalogue when it has the photo');
+  assert.match(body, /entry\.url \? `\$\{entry\.url\}=w176-h176`/,
+    'and the stored copy when it does not');
+});
+
+test('the tab says how this differs from a decision', () => {
+  // Two mechanisms that both hide photographs is confusing unless the
+  // difference is stated where both are visible.
+  const start = SOURCE.indexOf('  renderProtected() {');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  /* ------------------------------------------------------------ onglet 2 */'));
+  assert.match(body, /I have looked at this/);
+  assert.match(body, /clearing[\s\S]{0,40}catalogue clears them/);
+});

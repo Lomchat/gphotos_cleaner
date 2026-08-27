@@ -150,10 +150,16 @@ all four. Otherwise the face itself is the identity — it generalises less and
 is unambiguous, which is the right way round for a decision that hides
 photographs.
 
-The **Protected** tab lists everyone, as a face, with how many photos each is
-holding back. A protection is invisible by construction — it works by making
-photographs not appear — so the only way to check one was meant is to look at
-the person it holds.
+**Single photographs can be protected the same way**, from the same view, or in
+bulk from the sorting footer. That is not the same as *Keep the rest*: a
+decision means "I have looked at this one", belongs to a pass through the
+library, and is cleared when the catalogue is. Protection means "never offer
+this", and outlives a reset.
+
+The **Protected** tab lists everyone as a face, with how many photos each is
+holding back, and the protected photographs beside them. A protection is
+invisible by construction — it works by making photographs not appear — so the
+only way to check one was meant is to look at what it holds.
 
 **The reset does not clear this**, deliberately — a reset that dropped it would
 leave the next run offering exactly the photos it was told never to touch. Each
@@ -310,7 +316,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 773 tests, no dependencies
+npm test        # 783 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.
