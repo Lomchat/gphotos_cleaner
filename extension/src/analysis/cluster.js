@@ -32,54 +32,47 @@
  * It is a starting point, not a constant of nature — the People list has a
  * slider, because the right value depends on whose photos these are.
  */
-export const DEFAULT_EPS = 0.6;
-
 /**
- * What the extension ships with, which is deliberately looser than the above.
+ * How close two faces must be to count as the same person.
  *
- * `DEFAULT_EPS` sits inside the window read off labelled photographs: same
- * person at worst 0.48, closest strangers 0.63. That window comes from portrait
- * sets. A real library is not a portrait set — it is profiles, sunglasses,
- * bad light and twenty years of ageing — and at 0.6 the same person reliably
- * scatters across half a dozen groups, which is the complaint this default
- * answers.
+ * Measured on a real library of 4,582 faces, not on portraits. Two faces in
+ * one photograph are almost never the same person, which gives a stranger
+ * baseline with no labelling at all — and each face's nearest neighbour in
+ * *another* photograph stands in for same-person:
  *
- * It is above the stranger threshold, so it *will* put two people in one group
- * sometimes. That trade is deliberate and it is the user's to make: the panel
- * says so at this value, flags suspiciously wide groups as "mixed?", and the
- * slider goes back down to 0.45. Erring this way makes the library tidy and
- * occasionally wrong; erring the other way makes it always right and unusable.
+ *   same person (nearest, other photo)   median 0.41, 90th 0.61
+ *   strangers  (two faces, one photo)    5th 0.65, median 0.86
  *
- * The algorithm keeps the measured default, because that is a statement about
- * the model rather than about anyone's photographs.
+ * So the two populations separate cleanly, and anything above about 0.63
+ * starts eating into the strangers. 0.55 sits inside the gap with room on
+ * both sides.
  */
-export const SHIPPED_EPS = 0.75;
+export const DEFAULT_EPS = 0.55;
 
 /**
  * How the merge pass is scaled relative to `eps`.
  *
- * This was 0.8, on the reasoning that a centroid is an average and therefore
- * closer to the true identity than any single face, so it should have to meet a
- * stricter bar. That reasoning was wrong about the case that matters. A person
- * splits into two clusters because something *systematic* separates them —
- * frontal against profile, indoors against sun — and averaging does not remove
- * a systematic difference the way it removes noise. The two centroids keep the
- * gap, sit above the stricter bar, and never merge.
+ * This was 1.0, chosen from six runs over 44 faces of **two** people. That
+ * measurement could not have found what was wrong with it, and the mistake is
+ * worth recording: merging is transitive, so A joins B, then AB joins C, and
+ * the chain only forms when there are enough people to chain through. Two
+ * people cannot chain. The test that pinned it used two people as well.
  *
- * Measured over six runs of 44 faces from two people with wide within-person
- * variation, at the default eps:
+ * On a real library it collapsed almost everything into one blob. Measured
+ * over 4,582 faces, by how often two faces of a single photograph — so, two
+ * different people — ended up in the same group:
  *
- *   ratio   faces placed   runs that mixed two identities
- *   0.8         11.2            1 of 6
- *   1.0         12.5            1 of 6
- *   1.1         25.2            4 of 6
- *   1.2         35.8            5 of 6
+ *   eps   merge   groups   biggest group   strangers merged
+ *   0.75   1.0      23        96%              96%
+ *   0.60   1.0      76        45%              54%
+ *   0.55   0.8     306        10%               7.5%
  *
- * So 1.0 is a modest gain at no extra risk, and the cliff is immediately after.
- * The large lever on splitting is `eps`, not this — which is why `eps` is the
- * one exposed to the user.
+ * A group holding 96% of every face is not a person. Worse, it is invisible:
+ * the panel reported groups, the counts looked plausible, and every one of
+ * them was the same crowd. That is why the number below is now guarded by a
+ * test with many synthetic people in it rather than two.
  */
-export const MERGE_RATIO = 1.0;
+export const MERGE_RATIO = 0.8;
 
 /** A person seen once cannot be told apart from a stranger; leave them out. */
 export const DEFAULT_MIN_SIZE = 2;

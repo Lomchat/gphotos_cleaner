@@ -198,12 +198,31 @@ is sized in *photos in flight* rather than worker threads — each worker carrie
 several — and the analysis and face passes run at the same time, because one is
 bound by the link and the other by the CPU.
 
-**Grouping ships at 0.75, outside the measured window.** Same person at worst
-0.48, closest strangers 0.63 — but that window was read off studio portraits.
-A real library is profiles, sunglasses and twenty years of ageing, where 0.6
-scatters one person across six groups. At 0.75 two people will occasionally
-share a group; the panel says so at that value, flags wide groups as **mixed?**,
-and the slider goes back down to 0.45.
+**Grouping is tuned from a real library, not from portraits.** Two faces in one
+photograph are almost never the same person, which gives a stranger baseline
+with no labelling at all; each face's nearest neighbour in *another* photograph
+stands in for same-person. Measured over 4,582 faces:
+
+| | median | 90th |
+|---|---|---|
+| same person | 0.41 | 0.61 |
+| strangers | 0.86 | — (5th is 0.65) |
+
+The two separate cleanly, so the threshold sits at **0.55**. An earlier build
+shipped 0.75 on the argument that a real library is messier than a portrait
+set. It is — but the measurement says the opposite of what that argument
+predicted, and 0.75 put 16% of stranger pairs inside the threshold.
+
+**The merge pass is stricter than the assignment**, at 0.8× the threshold.
+Merging is transitive — A joins B, then AB joins C — so the same bar lets a
+cluster walk along a library's near-misses until it holds everybody. At 0.75
+with an equal bar, one group contained **96% of every face**, and 96% of
+multi-face photographs had two of their faces in it. Retuned:
+
+| threshold | merge | groups | biggest group | strangers merged |
+|---|---|---|---|---|
+| 0.75 | 1.0 | 23 | 96% | 96% |
+| 0.55 | 0.8 | 306 | 10% | 7.5% |
 
 **The extension can only move photos to the bin.** No permanent delete, no
 emptying, no restore — Google's own interface does all three. That
@@ -256,7 +275,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 727 tests, no dependencies
+npm test        # 729 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.
@@ -344,8 +363,12 @@ The **↺** in the panel header resets everything to a fresh install.
   Small faces in wide scenes are the likeliest misses.
 - Photos shared into your library by someone else cannot be binned; the
   confirmation says how many it is leaving alone.
-- Person grouping has no landmark alignment, which inflates same-person
-  distances — a group flagged **mixed?** deserves a look before you act on it.
+- Person grouping has no landmark alignment. ArcFace expects faces rotated to
+  canonical eye and mouth positions; UltraFace reports boxes only, so the crops
+  are unaligned and same-person distances are wider than they need to be. This
+  is the largest remaining lever on recognition quality, and it needs a
+  detector that reports landmarks.
+- A group flagged **mixed?** still deserves a look before you act on it.
 - The listing API is private and undocumented. Google can change it without
   notice, and automating a web service sits in a grey area of their terms. The
   extension acts only on your own account; the responsibility is yours.

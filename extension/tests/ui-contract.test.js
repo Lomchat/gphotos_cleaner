@@ -384,7 +384,7 @@ test('the similarity slider writes to the setting, not to the filters', () => {
   const body = methodBody(source, 'buildEpsControl');
   assert.equal(/resetButton\(\[/.test(body), false,
     'the filter reset helper must not be used for a setting');
-  assert.match(body, /s\.peopleEps = SHIPPED_EPS/, 'its own reset must restore the default');
+  assert.match(body, /s\.peopleEps = DEFAULT_EPS/, 'its own reset must restore the default');
   assert.match(body, /rebuildGroups\(\)/, 'changing it must regroup');
 });
 

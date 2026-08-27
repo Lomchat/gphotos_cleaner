@@ -29,7 +29,7 @@ import {
   MEDIA_LENSES, applyLens, countMedia
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
-import { groupLabel, SHIPPED_EPS, toVector, normalise, distance } from '../analysis/cluster.js';
+import { groupLabel, DEFAULT_EPS, toVector, normalise, distance } from '../analysis/cluster.js';
 import {
   matchProtected, makeProtected, protectedLabel
 } from '../analysis/protected-people.js';
@@ -105,7 +105,7 @@ const DEFAULT_SETTINGS = {
   // and a filter you cannot see the other side of is one you stop trusting.
   hideProtected: true,
   lastAnalysisSplit: null, // where the per-photo work actually goes
-  peopleEps: SHIPPED_EPS // how alike two faces must be to count as one person
+  peopleEps: DEFAULT_EPS // how alike two faces must be to count as one person
 };
 
 /**
@@ -2738,9 +2738,8 @@ export class Panel {
     const s = this.state.settings;
     const busy = !!this.state.busy;
     const value = s.peopleEps;
-    // Above the measured stranger threshold. True at the shipped default, on
-    // purpose — see SHIPPED_EPS — so the note explains the trade rather than
-    // sounding an alarm about a value the extension chose itself.
+    // Where the measured stranger population begins: at 0.65 the closest 5% of
+    // different-person pairs are already inside the threshold.
     const risky = value > 0.63;
 
     const out = el('output', { text: value.toFixed(2) });
@@ -2762,20 +2761,20 @@ export class Panel {
         // setting. Pointing it here would write undefined into the threshold.
         el('button', {
           class: 'reset', text: '↺',
-          title: value === SHIPPED_EPS
+          title: value === DEFAULT_EPS
             ? 'Already at the default'
-            : `Restore the default (${SHIPPED_EPS.toFixed(2)})`,
-          disabled: busy || value === SHIPPED_EPS,
+            : `Restore the default (${DEFAULT_EPS.toFixed(2)})`,
+          disabled: busy || value === DEFAULT_EPS,
           onclick: () => {
-            s.peopleEps = SHIPPED_EPS;
+            s.peopleEps = DEFAULT_EPS;
             this.persist();
             this.rebuildGroups();
           }
         })),
       el('div', { class: risky ? 'banner warn' : 'muted tiny' },
         risky
-          ? 'Loose enough that two people can share a group — the trade for not scattering one person across six. Check the "mixed?" flags before acting on a filter, or lower this.'
-          : 'Lower splits one person into several groups; higher risks merging two people. Changing it regroups straight away.'));
+          ? 'Past the point where different people start sharing a group — measured, 16% of stranger pairs sit inside 0.75. Check the "mixed?" flags before acting on a filter, or lower this.'
+          : 'Lower splits one person into several groups; higher merges different people together. Measured on a real library: same person sits around 0.41, strangers around 0.86. Changing it regroups straight away.'));
   }
 
   /**
