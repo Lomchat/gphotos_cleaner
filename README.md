@@ -306,7 +306,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 765 tests, no dependencies
+npm test        # 768 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

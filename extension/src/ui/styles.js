@@ -956,18 +956,23 @@ footer .buttons button { flex: 1; }
 /* The crop is a window onto the rendition already fetched for the stage: the
    box is normalised, so scaling and offsetting the same image puts the face in
    the frame with no second decode and no second request. */
-.faces-strip .crop {
+/* One window onto a face, wherever it is shown.
+   Both of the first two properties are load-bearing, and neither announces
+   itself: without position the image inside — which is absolute, and several
+   hundred per cent wide — climbs to the nearest positioned ancestor and covers
+   it; without overflow it spills out of the circle. Duplicating this rule per
+   context is how the Protected tab ended up with a photograph laid across the
+   whole panel. Contexts set the size and the trim, nothing else. */
+.crop {
   position: relative;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
   overflow: hidden;
+  border-radius: 50%;
   flex: none;
   background: var(--bg-input);
 }
-/* Every crop, not just the strip's: the Protected tab was left with a static,
-   width-constrained image and framed nothing at all.
-   object-fit must stay fill — anything that re-crops undoes the offsets. */
+.faces-strip .crop { width: 30px; height: 30px; }
+/* object-fit must stay fill — anything that re-crops undoes the offsets the
+   geometry computed. */
 .crop img {
   position: absolute;
   max-width: none;
@@ -991,7 +996,6 @@ footer .buttons button { flex: 1; }
 .guard .crop {
   width: 46px;
   height: 46px;
-  border-radius: 50%;
   border: 2px solid var(--mint);
 }
 .guard-side { flex: 1; min-width: 0; }

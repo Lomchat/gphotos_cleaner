@@ -595,3 +595,41 @@ test('taking a whole answer is a button, and it says how many', () => {
   assert.match(block, /disabled: !this\.state\.filtered\.length/,
     'and offers nothing when there is nothing to take');
 });
+
+/* --------------------------------------------- a magnified image must be caged */
+
+/**
+ * A face crop is an image several hundred per cent wide, absolutely
+ * positioned. Two properties on its container keep that from being a disaster,
+ * and neither announces itself in a diff:
+ *
+ *   position — without it the image climbs to the nearest positioned ancestor
+ *              and lays the photograph across the whole panel
+ *   overflow — without it the image spills out of the circle
+ *
+ * Both were once written only into the viewer strip's copy of the rule, and
+ * the Protected tab, which reused the class, got neither.
+ */
+test('the crop container cages what is inside it', () => {
+  const rule = PANEL_CSS.slice(PANEL_CSS.indexOf('.crop {'), PANEL_CSS.indexOf('}', PANEL_CSS.indexOf('.crop {')));
+  assert.match(rule, /position:\s*relative/);
+  assert.match(rule, /overflow:\s*hidden/);
+});
+
+test('the caging is written once, not per place it is used', () => {
+  // Two copies is how one of them ended up missing both properties.
+  const containers = [...PANEL_CSS.matchAll(/^\.[\w-]+ \.crop \{([^}]*)\}/gm)].map((m) => m[1]);
+  for (const body of containers) {
+    assert.equal(/position:|overflow:/.test(body), false,
+      `a per-context .crop rule is re-declaring the caging: ${body.trim()}`);
+  }
+});
+
+test('the image inside is positioned and unconstrained', () => {
+  // max-width would otherwise shrink it back to the frame and the offsets
+  // would frame the wrong part of the photograph.
+  const rule = PANEL_CSS.slice(PANEL_CSS.indexOf('.crop img {'), PANEL_CSS.indexOf('}', PANEL_CSS.indexOf('.crop img {')));
+  assert.match(rule, /position:\s*absolute/);
+  assert.match(rule, /max-width:\s*none/);
+  assert.match(rule, /object-fit:\s*fill/);
+});
