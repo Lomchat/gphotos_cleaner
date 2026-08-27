@@ -126,7 +126,7 @@ test('every class used by the panel is defined', () => {
     'people', 'person', 'faces', 'field', 'card-title', 'tiny',
     'sorts', 'sortbar', 'ranged',
     // Blocks, the facts on a tile, the full-size view and the hint mark.
-    'group-block', 'faces-strip', 'crop', 'guarded', 'facts', 'zoom', 'viewer', 'sheet', 'stage', 'backdrop', 'why'
+    'group-block', 'faces-strip', 'crop', 'guarded', 'guard', 'guard-list', 'guard-side', 'facts', 'zoom', 'viewer', 'sheet', 'stage', 'backdrop', 'why'
   ];
   for (const cls of critical) {
     assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),
@@ -271,11 +271,24 @@ test('the people picker starts no run of its own', () => {
     'the model download lives in the Analyse tab');
 });
 
-test('there is no People tab left to reach', () => {
+test('the old People tab is still gone', () => {
+  // Not to be confused with the Protected tab, which is a different thing: a
+  // list to audit, not a second place to start a face pass from. What this
+  // guards is that the scanning controls have not crept back into a tab of
+  // their own, away from the run they belong to.
   const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
   assert.equal(/renderPeople\s*\(/.test(source), false, 'renderPeople should be gone');
   assert.equal(/tabs\.people/.test(source), false, 'the tab node should be gone');
   assert.equal(/'people', 'People'/.test(source), false, 'the nav entry should be gone');
+});
+
+test('the Protected tab starts no run of its own', () => {
+  // Same rule as the picker: reading faces belongs with the analysis that
+  // feeds it, in one place, so there is never a second pass to remember.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const body = methodBody(source, 'renderProtected');
+  assert.equal(/runPeopleScan\(/.test(body), false);
+  assert.equal(/startFullRun\(/.test(body), false);
 });
 
 test('the picker is rendered beside the criteria it parameterises', () => {

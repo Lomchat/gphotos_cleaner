@@ -967,6 +967,39 @@ footer .buttons button { flex: 1; }
 }
 .faces-strip .crop img { position: absolute; max-width: none; object-fit: cover; }
 .faces-strip .face .action { padding: 2px 9px; font-size: 10.5px; }
+
+/* ------------------------------------------------------- protected people */
+
+.guard-list { display: flex; flex-direction: column; gap: 8px; }
+.guard {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+}
+.guard .crop {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 2px solid var(--mint);
+}
+.guard-side { flex: 1; min-width: 0; }
+.guard-side input {
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font: 600 12.5px/1.2 var(--body);
+}
+.guard-side input:hover { border-color: var(--line); }
+.guard-side input:focus { border-color: var(--amber); background: var(--bg-input); outline: none; }
+.guard-side .tiny { margin-top: 2px; padding-left: 7px; }
+.guard .action { flex: none; }
 .viewer footer .action { text-decoration: none; }
 
 /* ------------------------------------------------- the explanation mark */

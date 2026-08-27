@@ -135,9 +135,20 @@ meant to protect. It matches whole faces rather than groups for the same kind of
 reason: a group needs two faces to exist, so a protected person appearing once
 in a photo would form none and that photo would slip through.
 
-Where possible the identity taken is the centroid of that person's whole group,
-which has averaged away the lighting and angle of any single shot; the strip
-says whether a protection came from a group or from one face.
+The identity taken is the centroid of that person's whole group where there is
+a usable one — it has averaged away the lighting and angle of any single shot,
+so it recognises them in photographs that look nothing like the one in hand.
+But a group is only borrowed when it looks like **one** person: a group holding
+more faces than photographs has merged two people, and its centroid would
+protect them both. On a photo of four friends, protecting one used to protect
+all four. Otherwise the face itself is the identity — it generalises less and
+is unambiguous, which is the right way round for a decision that hides
+photographs.
+
+The **Protected** tab lists everyone, as a face, with how many photos each is
+holding back. A protection is invisible by construction — it works by making
+photographs not appear — so the only way to check one was meant is to look at
+the person it holds.
 
 **The reset does not clear this**, deliberately — a reset that dropped it would
 leave the next run offering exactly the photos it was told never to touch. Each
@@ -275,7 +286,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 729 tests, no dependencies
+npm test        # 737 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

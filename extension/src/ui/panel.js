@@ -31,7 +31,7 @@ import {
 import { formatDate } from '../common/dates.js';
 import { groupLabel, DEFAULT_EPS, toVector, normalise, distance } from '../analysis/cluster.js';
 import {
-  matchProtected, makeProtected, protectedLabel
+  matchProtected, makeProtected, protectedLabel, chooseIdentity
 } from '../analysis/protected-people.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 import {
@@ -580,7 +580,8 @@ export class Panel {
 
     this.tabsNav = el('nav', {});
     for (const [key, label] of [
-      ['scan', 'Analyse'], ['sort', 'Sort'], ['stats', 'Stats'], ['settings', 'Settings']
+      ['scan', 'Analyse'], ['sort', 'Sort'], ['protect', 'Protected'],
+      ['stats', 'Stats'], ['settings', 'Settings']
     ]) {
       put(
         this.tabsNav,
@@ -596,6 +597,7 @@ export class Panel {
     this.tabs = {
       scan: el('div', { class: 'tab' }),
       sort: el('div', { class: 'tab' }),
+      protect: el('div', { class: 'tab' }),
       stats: el('div', { class: 'tab' }),
       settings: el('div', { class: 'tab' })
     };
@@ -1016,6 +1018,38 @@ export class Panel {
   }
 
   /**
+   * A round window onto one face, cut from a photo's own rendition.
+   *
+   * CSS rather than a canvas: boxes are normalised, so scaling the picture by
+   * 1/side and shifting it by the box origin puts the face in the frame with
+   * no second decode and no second request. Shared by the strip under a photo
+   * and by the Protected tab, because two copies of this arithmetic would
+   * drift and only one of them would be noticed.
+   */
+  buildFaceCrop(baseUrl, box, size = 512) {
+    const [x1, y1, x2, y2] = box || [0, 0, 1, 1];
+    const w = Math.max(1e-3, x2 - x1);
+    const h = Math.max(1e-3, y2 - y1);
+    // Widened: a box cropped exactly to the detector's rectangle cuts off the
+    // hair and the chin, and a face is harder to recognise without them —
+    // which matters when the click protects a person.
+    const side = Math.max(w, h) * 1.6;
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    const zoom = 1 / side;
+    return el('div', { class: 'crop' },
+      baseUrl
+        ? el('img', {
+            src: `${baseUrl}=w${size}-h${size}`,
+            referrerPolicy: 'no-referrer',
+            style: `width:${zoom * 100}%; height:${zoom * 100}%;`
+              + `left:${-(cx - side / 2) * zoom * 100}%;`
+              + `top:${-(cy - side / 2) * zoom * 100}%;`
+          })
+        : null);
+  }
+
+  /**
    * The faces in the photo being viewed, and what can be done about them.
    *
    * Loaded per photo rather than held: the face store carries a 2 KB vector
@@ -1052,27 +1086,8 @@ export class Panel {
 
     host.replaceChildren(...faces.map((face) => {
       const hit = matchProtected(face.vector, this.state.protect, eps);
-      const [x1, y1, x2, y2] = face.box || [0, 0, 1, 1];
-      const w = Math.max(1e-3, x2 - x1);
-      const h = Math.max(1e-3, y2 - y1);
-      // Widened a little: a box cropped exactly to the detector's rectangle
-      // cuts the hair and the chin off, and a face is harder to recognise
-      // without them — which matters when the click protects a person.
-      const pad = 0.6;
-      const side = Math.max(w, h) * (1 + pad);
-      const cx = (x1 + x2) / 2;
-      const cy = (y1 + y2) / 2;
-      const zoom = 1 / side;
-
       return el('div', { class: `face${hit ? ' guarded' : ''}` },
-        el('div', { class: 'crop' },
-          el('img', {
-            src: `${base}=w512-h512`,
-            referrerPolicy: 'no-referrer',
-            style: `width:${zoom * 100}%; height:${zoom * 100}%;`
-              + `left:${-(cx - side / 2) * zoom * 100}%;`
-              + `top:${-(cy - side / 2) * zoom * 100}%;`
-          })),
+        this.buildFaceCrop(base, face.box),
         hit
           ? el('span', { class: 'muted tiny', title: `distance ${hit.distance.toFixed(2)}` },
               protectedLabel(hit.person, this.state.protect.indexOf(hit.person)))
@@ -1543,6 +1558,7 @@ export class Panel {
 
     this.renderScan();
     this.renderSort();
+    this.renderProtected();
     this.renderStats();
     this.renderSettings();
     this.renderFooter();
@@ -2194,6 +2210,102 @@ export class Panel {
       `${nf(c.known || 0)} already known.`);
   }
 
+
+  /* --------------------------------------------------------- protected tab */
+
+  /**
+   * Everyone whose photos are kept out of the way, shown as faces.
+   *
+   * A tab rather than a corner of the sorting column, because this is a list
+   * that has to be *audited*: a protection is invisible by construction — it
+   * works by making photographs not appear — so the only way to check one was
+   * meant is to look at the person it holds.
+   */
+  renderProtected() {
+    const t = this.tabs.protect;
+    t.replaceChildren();
+    const list = this.state.protect;
+    const s = this.state.settings;
+
+    if (!list.length) {
+      put(t,
+        el('div', { class: 'hero' },
+          el('div', { class: 'hero-side' },
+            el('div', { class: 'hero-title' }, 'Nobody is protected'),
+            el('div', { class: 'hero-sub' },
+              'Open any photo from the sorting view — the faces in it appear along the '
+              + 'bottom, each with a Protect button. Protected people are never offered '
+              + 'for deletion, and this list survives a reset.'))));
+      return;
+    }
+
+    // How many photos each one is actually keeping out of the way. The mark is
+    // written on the item by the regroup, so this is a count rather than a
+    // second pass over the faces.
+    const byPerson = new Map();
+    for (const item of this.state.items) {
+      if (!item.protectedBy) continue;
+      byPerson.set(item.protectedBy, (byPerson.get(item.protectedBy) || 0) + 1);
+    }
+    const total = [...byPerson.values()].reduce((a, b) => a + b, 0);
+
+    put(t,
+      el('section', {},
+        el('h2', {}, 'Protected people'),
+        el('div', { class: 'kpis' },
+          kpi(nf(list.length), 'people'),
+          kpi(nf(total), 'photos held back', total ? 'good' : '')),
+        el('div', { class: 'muted tiny', style: 'margin-top:8px' },
+          'Kept even if you reset the extension — this is the one list a reset does not clear.')));
+
+    const cards = el('div', { class: 'guard-list' });
+    list.forEach((person, i) => {
+      const photo = this.state.byId?.get(person.photoId);
+      const base = (photo?.urlRaw || photo?.url || '').split('=')[0] || null;
+      const held = byPerson.get(person.id) || 0;
+
+      cards.append(el('div', { class: 'guard' },
+        this.buildFaceCrop(base, person.box, 256),
+        el('div', { class: 'guard-side' },
+          el('input', {
+            type: 'text',
+            value: person.name || '',
+            placeholder: protectedLabel(person, i),
+            title: 'Name this person',
+            onchange: (e) => this.renameProtected(person.id, e.target.value)
+          }),
+          el('div', { class: 'muted tiny' },
+            `${nf(held)} photo(s) held back · `,
+            person.from === 'group'
+              // Why this matters is worth saying: the two are not equivalent,
+              // and the weaker one is the one that will seem to stop working.
+              ? el('span', { title: 'Taken from every photo of them the grouping had found' }, 'from a group')
+              : el('span', { title: 'Taken from one photograph, so it may not recognise them in very different ones' }, 'from one face'))),
+        el('button', {
+          class: 'action danger',
+          text: 'Stop protecting',
+          disabled: !!this.state.busy,
+          onclick: () => this.unprotect(person.id)
+        })));
+    });
+    put(t, el('section', {}, cards));
+
+    put(t, el('section', {},
+      el('div', { class: 'card' },
+        el('label', { class: 'switch' },
+          el('input', {
+            type: 'checkbox', checked: !s.hideProtected,
+            onchange: (e) => {
+              s.hideProtected = !e.target.checked;
+              this.persist();
+              this.dupCache = null;
+              this.recompute();
+              this.renderAll();
+            }
+          }),
+          el('span', {}, 'Show their photos anyway'),
+          el('small', {}, 'they stay protected; this only puts them back in the grid')))));
+  }
 
   /* ------------------------------------------------------------ onglet 2 */
   /**
@@ -3889,28 +4001,22 @@ export class Panel {
     const eps = this.state.settings.peopleEps;
     if (matchProtected(face.vector, this.state.protect, eps)) return;
 
-    // The nearest group, if this face sits in one.
-    let centroid = face.vector;
-    let from = 'face';
-    let name = null;
-    let best = null;
-    let bestDist = Infinity;
-    for (const group of this.state.people.groups) {
-      if (!group.centroid) continue;
-      try {
-        const d = distance(normalise(toVector(face.vector)), normalise(toVector(group.centroid)));
-        if (d < bestDist) { bestDist = d; best = group; }
-      } catch { /* a vector that did not survive storage */ }
-    }
-    if (best && bestDist <= eps) {
-      centroid = best.centroid;
-      from = 'group';
-      name = best.name || null;
-    }
+    // Which vector stands for this person is a real decision, and it lives in
+    // the pure module with the reasoning: borrowing a group's centroid
+    // generalises better, but a group that has merged two people speaks for
+    // both — on a photo of four friends, protecting one protected all four.
+    const { centroid, from, name } = chooseIdentity(face.vector, this.state.people.groups, eps);
 
     this.state.protect = [
       ...this.state.protect,
-      makeProtected({ centroid, name, from, photoId: item?.id ?? null, now: Date.now() })
+      makeProtected({
+        centroid, name, from,
+        photoId: item?.id ?? null,
+        // Kept so the person can be shown as a face in the Protected tab. A
+        // list of protections nobody can recognise is a list nobody can audit.
+        box: face.box || null,
+        now: Date.now()
+      })
     ];
     await this.persistProtected();
     // Re-marks every photo in the catalogue against the new list. This is the
@@ -3918,7 +4024,12 @@ export class Panel {
     // is a deliberate click rather than something that happens on hover.
     await this.rebuildGroups({ quiet: true });
     if (this.state.viewing) this.openViewer(this.state.viewing);
-    this.flashStatus('Face protected — their photos are hidden', 'done', 5000);
+    this.flashStatus(
+      from === 'group'
+        ? 'Protected — their photos are hidden'
+        : 'Protected from this one face — open more of their photos to widen it',
+      'done', 6000
+    );
     this.renderAll();
   }
 
@@ -3954,46 +4065,22 @@ export class Panel {
   buildProtectedSection() {
     const list = this.state.protect;
     if (!list.length) return null;
-    const s = this.state.settings;
     const hidden = this.state.protectedCount || 0;
 
-    const rows = list.map((person, i) => el('div', { class: 'person' },
-      el('input', {
-        type: 'text',
-        value: person.name || '',
-        placeholder: protectedLabel(person, i),
-        title: person.from === 'group'
-          ? 'Protected from a whole group of faces'
-          : 'Protected from a single face — it may not recognise them in very different photos',
-        onchange: (e) => this.renameProtected(person.id, e.target.value)
-      }),
-      el('span', { class: 'muted tiny' }, person.from === 'group' ? 'group' : 'one face'),
-      el('button', {
-        class: 'reset', text: '✕',
-        title: 'Stop protecting this person',
-        onclick: () => this.unprotect(person.id)
-      })));
-
+    // Deliberately just the fact and the way out. Editing lives in the
+    // Protected tab, where there is room to show a face — two places to change
+    // the same thing is how they end up disagreeing.
     return el('div', { style: 'margin-top:14px' },
       el('h3', {}, 'Protected'),
-      el('div', { class: 'muted tiny', style: 'margin-bottom:6px' },
+      el('div', { class: 'muted tiny' },
         hidden
-          ? `${nf(hidden)} photo(s) of these people are kept out of the grid.`
-          : 'No photo currently matches these people.'),
-      el('div', { class: 'people' }, rows),
-      el('label', { class: 'switch', style: 'margin-top:8px' },
-        el('input', {
-          type: 'checkbox', checked: !s.hideProtected,
-          onchange: (e) => {
-            s.hideProtected = !e.target.checked;
-            this.persist();
-            this.dupCache = null;
-            this.recompute();
-            this.renderAll();
-          }
-        }),
-        el('span', {}, 'Show them anyway'),
-        el('small', {}, 'they stay protected; this only puts them back on screen')));
+          ? `${nf(hidden)} photo(s) of ${nf(list.length)} protected person(s) are kept out of this grid.`
+          : `${nf(list.length)} person(s) protected; none of their photos are in this grid.`),
+      el('button', {
+        class: 'action', style: 'margin-top:6px',
+        text: 'Manage protected people',
+        onclick: () => { this.closeModal(); this.state.tab = 'protect'; this.renderAll(); }
+      }));
   }
 
   /* ------------------------------------------------------------- decisions */

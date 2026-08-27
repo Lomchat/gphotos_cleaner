@@ -17,7 +17,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  matchProtected, protectedPhotos, makeProtected, protectedLabel
+  matchProtected, protectedPhotos, makeProtected, protectedLabel,
+  chooseIdentity, looksLikeOnePerson
 } from '../src/analysis/protected-people.js';
 import { normalise } from '../src/analysis/cluster.js';
 
@@ -227,14 +228,61 @@ test('the grouping is redone when the list changes', () => {
   assert.match(un, /rebuildGroups\(\{ quiet: true \}\)/);
 });
 
-test('protecting prefers a group centroid over a single face', () => {
-  // A centroid has averaged away the lighting and the angle of one shot, so it
-  // recognises the person in photographs that look nothing like this one.
-  const start = SOURCE.indexOf('  async protectFace(');
-  const body = SOURCE.slice(start, SOURCE.indexOf('  async unprotect('));
-  assert.match(body, /this\.state\.people\.groups/);
-  assert.match(body, /from = 'group'/);
-  assert.match(body, /centroid = best\.centroid/);
+/* -------------------------------------------- whose identity gets stored */
+
+/** A group as `forDisplay` hands it over. */
+const group = (centroid, over = {}) => ({
+  id: 0, name: null, centroid, size: 6, photoIds: ['a', 'b', 'c', 'd', 'e', 'f'],
+  spread: 0.1, ...over
+});
+
+test('a tight group of one person is borrowed', () => {
+  // It generalises better: the centroid has averaged away the lighting and the
+  // angle of any single shot.
+  const out = chooseIdentity(face(0, 0.05), [group(face(0), { name: 'Ada' })], 0.55);
+  assert.equal(out.from, 'group');
+  assert.equal(out.name, 'Ada');
+});
+
+test('a group holding two people is not borrowed', () => {
+  // The bug this fixes: on a photo of four friends, protecting one protected
+  // all four, because the nearest group had merged them and its centroid spoke
+  // for everybody in it.
+  const mixed = group(face(0), { size: 8, photoIds: ['a', 'b', 'c'] });
+  const out = chooseIdentity(face(0, 0.05), [mixed], 0.55);
+  assert.equal(out.from, 'face', 'more faces than photographs means merged people');
+});
+
+test('a group too loose to stand for anybody is not borrowed', () => {
+  // Technically unmixed and still a poor identity: its centroid sits between
+  // several people rather than on one.
+  const loose = group(face(0), { spread: 0.5 });
+  assert.equal(chooseIdentity(face(0, 0.05), [loose], 0.55).from, 'face');
+});
+
+test('a group of somebody else is not borrowed', () => {
+  assert.equal(chooseIdentity(face(9), [group(face(0))], 0.55).from, 'face');
+});
+
+test('with no groups at all the face is the identity', () => {
+  const v = face(0);
+  const out = chooseIdentity(v, [], 0.55);
+  assert.equal(out.from, 'face');
+  assert.equal(out.centroid, v, 'the face itself, unchanged');
+});
+
+test('an unusable vector still yields something storable', () => {
+  // Rather than throwing inside a click handler.
+  assert.equal(chooseIdentity(null, [group(face(0))], 0.55).from, 'face');
+});
+
+test('one photograph contributing two faces marks a group as mixed', () => {
+  // Not a heuristic about faces — a fact about photographs, and the same
+  // signal the clustering thresholds were measured with.
+  assert.equal(looksLikeOnePerson(group(face(0)), 0.55), true);
+  assert.equal(looksLikeOnePerson(group(face(0), { size: 7 }), 0.55), false);
+  assert.equal(looksLikeOnePerson(group(face(0), { photoIds: [] }), 0.55), false);
+  assert.equal(looksLikeOnePerson(null, 0.55), false);
 });
 
 test('protecting an already-protected face does nothing', () => {
@@ -245,10 +293,21 @@ test('protecting an already-protected face does nothing', () => {
 
 test('the hiding can be seen from the other side', () => {
   // A filter with no way to check what it removed is one people stop trusting.
+  const start = SOURCE.indexOf('  renderProtected() {');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  /* ------------------------------------------------------------ onglet 2 */'));
+  assert.match(body, /Show their photos anyway/);
+  assert.match(body, /hideProtected = !e\.target\.checked/);
+});
+
+test('the grid says what it is hiding, and where to go about it', () => {
+  // The count belongs where the hiding happens; the editing belongs where
+  // there is room to show a face. Two places to change the same thing is how
+  // they end up disagreeing.
   const start = SOURCE.indexOf('  buildProtectedSection() {');
   const body = SOURCE.slice(start, SOURCE.indexOf('  /* ------------------------------------------------------------- decisions */'));
-  assert.match(body, /Show them anyway/);
-  assert.match(body, /kept out of the grid/);
+  assert.match(body, /kept out of this grid/);
+  assert.match(body, /this\.state\.tab = 'protect'/);
+  assert.equal(/renameProtected/.test(body), false, 'editing lives in the tab');
 });
 
 test('the strip is loaded per photo, and only for the photo still open', () => {

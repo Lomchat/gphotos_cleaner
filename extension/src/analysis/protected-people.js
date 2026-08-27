@@ -82,15 +82,73 @@ export function protectedPhotos(faces = [], list = [], eps = 0.75) {
 }
 
 /**
+ * Is this group about one person, as far as anything here can tell?
+ *
+ * Two faces from the *same photograph* are almost never the same person, so a
+ * group holding more faces than photographs has merged at least two people.
+ * That is not a heuristic about faces, it is a fact about photographs, and it
+ * is the same signal the clustering thresholds were measured with.
+ */
+export function looksLikeOnePerson(group, eps = 0.55) {
+  if (!group || !group.centroid) return false;
+  const photos = group.photoIds?.length ?? 0;
+  if (!photos || group.size > photos) return false;
+  // A group can also be technically unmixed and still far too loose to stand
+  // for anybody — its centroid then sits between several people rather than on
+  // one. Half the threshold is the point past which that starts to show.
+  return (group.spread ?? 0) <= eps * 0.5;
+}
+
+/**
+ * Which vector should stand for the person being protected.
+ *
+ * A group centroid generalises better — it has averaged away the lighting and
+ * the angle of any single shot — so it recognises the person in photographs
+ * that look nothing like the one in hand. But it speaks for everybody in that
+ * group, and a group that has merged two people would protect them both. On a
+ * photo of four friends, protecting one was protecting all four.
+ *
+ * So a group is only borrowed when it looks like one person. Otherwise the
+ * face itself is the identity: it generalises less and it is unambiguous,
+ * which is the right way round for a decision that hides photographs.
+ */
+export function chooseIdentity(vector, groups = [], eps = 0.55) {
+  let best = null;
+  let bestDist = Infinity;
+  let unit;
+  try {
+    unit = normalise(toVector(vector));
+  } catch {
+    return { centroid: vector, from: 'face', name: null };
+  }
+
+  for (const group of groups) {
+    if (!looksLikeOnePerson(group, eps)) continue;
+    let d;
+    try {
+      d = distance(unit, normalise(toVector(group.centroid)));
+    } catch {
+      continue;
+    }
+    if (d < bestDist) { bestDist = d; best = group; }
+  }
+
+  if (best && bestDist <= eps) {
+    return { centroid: best.centroid, from: 'group', name: best.name || null };
+  }
+  return { centroid: vector, from: 'face', name: null };
+}
+
+/**
  * A protected person, built from a face or from a whole group.
  *
- * A group centroid is the better identity when there is one — it averages away
- * the lighting and the angle of any single shot — so callers are expected to
- * find the group first and fall back to the lone face only when there is none.
- * The distinction is recorded, because "protected from one photo" is a weaker
- * claim and the panel should be able to say so.
+ * The box and the photo travel with it so the person can be shown as a face
+ * rather than as a row of text — a list of protections nobody can recognise is
+ * a list nobody can audit.
  */
-export function makeProtected({ centroid, name = null, from = 'face', photoId = null, now = 0 }) {
+export function makeProtected({
+  centroid, name = null, from = 'face', photoId = null, box = null, now = 0
+}) {
   return {
     // Random rather than positional, precisely because positional is what
     // makes group ids unusable here.
@@ -101,6 +159,7 @@ export function makeProtected({ centroid, name = null, from = 'face', photoId = 
     centroid: Array.from(toVector(centroid)),
     from,
     photoId,
+    box: box ? Array.from(box) : null,
     addedAt: now
   };
 }
