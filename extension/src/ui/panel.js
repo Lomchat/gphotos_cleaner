@@ -89,6 +89,10 @@ const DEFAULT_SETTINGS = {
   analyzeInflight: 3,
   scanOlderThanTs: null,  // only handle items older than this date
   scanPeople: true,      // read faces as part of the main run
+  // Sample several frames of each video rather than reading its poster. Off by
+  // default, and it is the one setting here that costs real bandwidth — see
+  // buildVideoFaceOption for the measured figure.
+  sampleVideoFaces: false,
   // File name and byte size come from a second call per 200 items. Worth it:
   // size is the only thing here that says what a photo actually costs you, and
   // it is the reason to delete anything at all.
@@ -1750,6 +1754,7 @@ export class Panel {
           this.buildLimitControl(),
           this.buildSizeOption(),
           this.buildPeopleOption(),
+          this.buildVideoFaceOption(),
           this.buildPlanNote(pending),
           this.buildResumeNote(),
 
@@ -2487,6 +2492,56 @@ export class Panel {
   }
 
   /**
+   * Whether videos are sampled or merely glanced at.
+   *
+   * Its own switch, under the people one, because it is the only thing in this
+   * panel that costs real bandwidth and the figure has to be on the switch
+   * rather than in a note somewhere. Measured on a live library: the video
+   * rendition runs at about 96 KB per second, so the estimate below is
+   * arithmetic on durations already in the catalogue, not a guess.
+   *
+   * Off by default for the same reason. A face pass that quietly downloaded
+   * gigabytes because it was switched on by inheritance would be indefensible.
+   */
+  buildVideoFaceOption() {
+    const s = this.state.settings;
+    if (!s.scanPeople) return null;
+
+    // What sampling would actually fetch, if it ran now.
+    let seconds = 0;
+    let count = 0;
+    for (const it of this.state.items) {
+      if (!it.isVideo || it.peopleScanned) continue;
+      if ((it.features?.faceScore ?? 0) < 0.35) continue;
+      count++;
+      // Capped per video, exactly as the sampler caps it.
+      seconds += Math.min(it.duration || 0, 45);
+    }
+    const bytes = seconds * 96 * 1024;
+
+    return el('div', { class: 'card', style: 'margin-top:10px' },
+      el('label', { class: 'switch' },
+        el('input', {
+          type: 'checkbox', checked: s.sampleVideoFaces, disabled: !!this.state.busy,
+          onchange: (e) => { s.sampleVideoFaces = e.target.checked; this.persist(); this.renderAll(); }
+        }),
+        el('span', {}, 'Look through videos, not just their cover frame'),
+        el('small', {}, 'four moments per video, one entry per person found')),
+      el('div', { class: s.sampleVideoFaces ? 'banner warn' : 'muted tiny', style: 'margin-top:6px' },
+        count
+          ? [
+              el('b', {}, `About ${formatBytes(bytes)} to download`),
+              ` across ${nf(count)} video(s). Their cover frame is free and already read; `,
+              'the frames inside are not — there is no way to decode one without the '
+              + 'video leading up to it. Each is capped at the first 45 seconds.'
+            ]
+          : 'No video is waiting to be read.'),
+      el('div', { class: 'muted tiny', style: 'margin-top:4px' },
+        'Off, a video is judged by its cover frame alone — which is one arbitrary '
+        + 'moment, and misses anyone who is not in it.'));
+  }
+
+  /**
    * Order buttons above the preview.
    *
    * An order is a reason to look, not a filter: it never changes what is
@@ -3211,6 +3266,7 @@ export class Panel {
         signal: this.runAbort?.signal,
         // The same lever as the analysis: this pass is bound by the same link.
         inflight: this.state.settings.analyzeInflight,
+        sampleVideo: this.state.settings.sampleVideoFaces,
         send: (m) => this.send(m),
         save: (results, ids) => this.saveFaces(results, ids),
         onProgress: ({ done: inChunk, faces }) => {

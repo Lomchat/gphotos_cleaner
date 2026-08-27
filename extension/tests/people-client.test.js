@@ -35,9 +35,15 @@ test('only photos the analysis thinks contain a face are read', () => {
   assert.deepEqual(candidates(items).map((i) => i.id), ['face']);
 });
 
-test('videos are never read', () => {
-  // Their thumbnail is one arbitrary frame; an identity from it means nothing.
-  assert.deepEqual(candidates([photo('v', { isVideo: 1 })]), []);
+test('videos are read too', () => {
+  // They were excluded on the reasoning that a video's thumbnail is one
+  // arbitrary frame — which is why the *quality* criteria exempt them, since a
+  // frame can be blurred or black while the video is not. For recognition the
+  // argument inverts: a face legible in that frame is a real face. The rule
+  // was applied to the one case where it does not hold, and it left every
+  // video of a protected person still on offer.
+  const items = [photo('a'), photo('v', { isVideo: 1, duration: 30 })];
+  assert.deepEqual(candidates(items).map((i) => i.id), ['a', 'v']);
 });
 
 test('photos with no thumbnail URL are skipped', () => {

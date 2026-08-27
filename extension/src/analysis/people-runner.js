@@ -14,6 +14,7 @@ import { toInputTensor } from './face-postprocess.js';
 import { detect as detectFaces } from './face-pool.js';
 import { embed } from './recognize-pool.js';
 import { cropRect, toFaceTensor, faceWidthPx, FACE_SIZE } from './face-crop.js';
+import { grabFrames, dedupeFaces, BYTE_CAP, FRAME_COUNT } from './video-frames.js';
 
 /**
  * Rendition asked of Google for this pass.
@@ -98,7 +99,113 @@ function facePatch(bitmap, box) {
  *
  * @returns {{id, ok, faces?: Array<{box, score, vector}>, skipped?: number, error?}}
  */
-export async function analysePhoto(item) {
+/**
+ * Every usable face in one already-decoded picture.
+ *
+ * Split out of `analysePhoto` so a video can run it once per sampled frame.
+ * Returns the faces and how many were too small to identify, rather than a
+ * finished result, because a video has to pool several of these before it can
+ * say anything.
+ */
+async function facesInBitmap(bitmap) {
+  const { tensor, pad } = toInputTensor(imageDataOf(bitmap));
+  const summary = await detectFaces(tensor, pad, DETECT_THRESHOLD);
+  if (!summary) throw new Error('face detection unavailable');
+
+  // `boxes`, not `faces`: the detector's reply carries a summary of the
+  // strongest face alongside the full list, and reading the wrong key would
+  // silently find nobody in a library full of people.
+  const boxes = summary.boxes || [];
+  let skipped = 0;
+  const usable = [];
+  for (const face of boxes) {
+    if (faceWidthPx(face.box, bitmap.width) < MIN_FACE_PX) { skipped++; continue; }
+    usable.push(face);
+  }
+
+  // Fanned out across the recognition pool rather than awaited one at a time.
+  const vectors = await Promise.all(usable.map((f) => embed(facePatch(bitmap, f.box))));
+  if (vectors.some((v) => !v)) throw new Error('recognition unavailable');
+
+  return {
+    skipped,
+    faces: usable.map((face, i) => ({
+      box: face.box,
+      score: face.score,
+      // Plain array, not the Float32Array: the reply travels over
+      // chrome.runtime messaging, which serialises to JSON rather than
+      // structure-cloning. A typed array arrives there as {"0": .., "1": ..},
+      // with no length — and every distance computed from it comes out as 1.
+      vector: Array.from(vectors[i])
+    }))
+  };
+}
+
+/**
+ * Faces across several frames of a video, one per person.
+ *
+ * Falls back to the poster frame on any failure — a decode that does not work
+ * leaves a video no worse off than before videos were read at all, which is
+ * what makes sampling them safe to switch on.
+ */
+async function analyseVideo(item, options) {
+  const base = (item.urlRaw || item.url || '').split('=')[0];
+  const { frames, reason } = base
+    ? await grabFrames(`${base}=m18`, {
+        duration: item.duration || 0,
+        byteCap: options?.byteCap ?? BYTE_CAP,
+        count: options?.frameCount ?? FRAME_COUNT
+      })
+    : { frames: [], reason: 'no url' };
+
+  if (!frames.length) return { frames: 0, fellBack: reason || 'no frame' };
+
+  const found = [];
+  let skipped = 0;
+  try {
+    for (const frame of frames) {
+      const part = await facesInBitmap(frame);
+      skipped += part.skipped;
+      // The box is normalised, so it travels between frames of one video
+      // unchanged — they are all the same size.
+      for (const face of part.faces) found.push(face);
+    }
+  } finally {
+    for (const frame of frames) frame.close?.();
+  }
+
+  return {
+    frames: frames.length,
+    skipped,
+    // One per person. Five frames of one face are five embeddings of one
+    // person: stored whole they would inflate that person's group fivefold,
+    // skew the rarest-people order, and break the rule that two faces sharing
+    // a photo id are two *different* people — which is what protection uses to
+    // tell a clean group from a merged one.
+    faces: dedupeFaces(found, options?.eps ?? 0.55)
+  };
+}
+
+export async function analysePhoto(item, options = {}) {
+  // A video is sampled across several instants when asked for; its poster
+  // frame remains the fallback, and the only path when sampling is off.
+  if (item.isVideo && options.sampleVideo) {
+    try {
+      const out = await analyseVideo(item, options);
+      if (out.faces?.length || out.frames) {
+        return {
+          id: item.id, ok: true,
+          faces: out.faces || [],
+          skipped: out.skipped || 0,
+          frames: out.frames
+        };
+      }
+    } catch (err) {
+      // Straight on to the poster frame below.
+      void err;
+    }
+  }
+
   let bitmap;
   try {
     bitmap = await fetchBitmap(item.url);
@@ -107,43 +214,7 @@ export async function analysePhoto(item) {
   }
 
   try {
-    const { tensor, pad } = toInputTensor(imageDataOf(bitmap));
-    const summary = await detectFaces(tensor, pad, DETECT_THRESHOLD);
-    if (!summary) return { id: item.id, ok: false, error: 'face detection unavailable' };
-
-    // `boxes`, not `faces`: the detector's reply carries a summary of the
-    // strongest face alongside the full list, and reading the wrong key would
-    // silently find nobody in a library full of people.
-    const boxes = summary.boxes || [];
-    let skipped = 0;
-    const usable = [];
-    for (const face of boxes) {
-      if (faceWidthPx(face.box, bitmap.width) < MIN_FACE_PX) { skipped++; continue; }
-      usable.push(face);
-    }
-
-    // Fanned out across the recognition pool rather than awaited one at a
-    // time. A group photo of seven was seven sequential round trips, holding
-    // its slot in the pass open while four of the five recognisers sat idle —
-    // and the batch it belongs to is paced by its slowest photo.
-    const vectors = await Promise.all(
-      usable.map((face) => embed(facePatch(bitmap, face.box)))
-    );
-    // One failure means the pool is gone, not that one face is odd, so the
-    // photo is reported unread rather than half read.
-    if (vectors.some((v) => !v)) {
-      return { id: item.id, ok: false, error: 'recognition unavailable' };
-    }
-
-    const faces = usable.map((face, i) => ({
-      box: face.box,
-      score: face.score,
-      // Plain array, not the Float32Array: the reply travels over
-      // chrome.runtime messaging, which serialises to JSON rather than
-      // structured-cloning. A typed array arrives there as {"0": .., "1": ..},
-      // with no length — and every distance computed from it comes out as 1.
-      vector: Array.from(vectors[i])
-    }));
+    const { faces, skipped } = await facesInBitmap(bitmap);
 
     return { id: item.id, ok: true, faces, skipped, width: bitmap.width, height: bitmap.height };
   } catch (err) {

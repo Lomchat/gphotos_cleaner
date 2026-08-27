@@ -61,6 +61,11 @@ One button. Three things bound it, and a banner says what the next run will do:
   not clear — everything else can be rebuilt by running again.
 - **Limit per run** — 2,000 by default. Progress is kept; a rerun resumes.
 - **File names and sizes**, and **grouping by person** — both on by default.
+- **Look through videos** — off by default, and the only setting here that
+  costs real bandwidth. It samples four moments of each video instead of
+  judging it by its cover frame. Measured: the video rendition runs at about
+  96 KB per second, so the switch states what it would download before you
+  press it, capped at the first 45 seconds of each.
 
 Stop halts every stage. It is not instant — each checks between batches — so
 the click is acknowledged straight away, and whatever was read is kept.
@@ -172,6 +177,21 @@ from Google's own metadata.
 | Documents | Pale desaturated background, bimodal histogram, text lines | Fair |
 | Large files / long videos | Google's metadata | Exact |
 | A given person | ArcFace `buffalo_s` embeddings, agglomerative grouping | Good |
+
+Videos are read for faces too. They used to be skipped, on the reasoning that a
+video's thumbnail is one arbitrary frame — which is why the *quality* criteria
+exempt them, since a frame can be blurred or black while the video is neither.
+For recognition the argument inverts: a face legible in that frame is a real
+face. Skipping them meant every video of a protected person stayed on offer.
+
+By default a video is judged by its cover frame, which is free and already
+fetched. Switch on **Look through videos** and four moments are sampled
+instead — bounded, because there is no way to decode a frame without the video
+leading up to it. Faces are then deduplicated *within* each video: five frames
+of one person are one person, and storing five would inflate their group, skew
+the rarest-people order, and break the rule that two faces sharing a photo id
+are two different people. Anything that fails to decode falls back to the cover
+frame.
 
 A photo with no size figure **never** matches "large files" and sinks in the
 size order. Unknown is not small.
@@ -286,7 +306,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 746 tests, no dependencies
+npm test        # 765 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

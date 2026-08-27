@@ -415,7 +415,9 @@ export async function getPeopleCandidates(limit = 240, minFaceScore = 0.35) {
       const cursor = req.result;
       if (!cursor || out.length >= limit) return resolve(out);
       const v = cursor.value;
-      if (v.url && !v.isVideo && !v.peopleScanned && (v.features?.faceScore ?? 0) >= minFaceScore) {
+      // Videos included — see `candidates` in people-client for why they
+      // were not, and why that reasoning did not apply here.
+      if (v.url && !v.peopleScanned && (v.features?.faceScore ?? 0) >= minFaceScore) {
         out.push(v);
       }
       if (out.length >= limit) return resolve(out);

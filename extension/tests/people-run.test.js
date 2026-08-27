@@ -125,8 +125,10 @@ test('the download is announced in the run log', async () => {
 
 test('a photo embeds its faces together, not one after another', () => {
   const source = readFileSync(new URL('../src/analysis/people-runner.js', import.meta.url), 'utf8');
-  const body = source.slice(source.indexOf('export async function analysePhoto'));
-  assert.match(body, /Promise\.all\(\s*usable\.map/,
+  // The work moved into `facesInBitmap` when videos arrived, so a video could
+  // run it once per sampled frame. The rule it has to keep did not change.
+  const body = source.slice(source.indexOf('async function facesInBitmap'));
+  assert.match(body, /Promise\.all\(usable\.map/,
     'a group photo of seven was seven sequential round trips to the pool');
   assert.equal(/for \(const face of boxes\)[\s\S]{0,200}await embed\(/.test(body), false,
     'the sequential loop must not come back');
@@ -136,7 +138,7 @@ test('a photo is reported unread rather than half read when the pool dies', () =
   // A missing vector means the recogniser is gone, not that one face is odd.
   // Keeping the others would store a photo whose faces are silently incomplete.
   const source = readFileSync(new URL('../src/analysis/people-runner.js', import.meta.url), 'utf8');
-  const body = source.slice(source.indexOf('export async function analysePhoto'));
+  const body = source.slice(source.indexOf('async function facesInBitmap'));
   assert.match(body, /vectors\.some\(\(v\) => !v\)/);
   assert.match(body, /recognition unavailable/);
 });

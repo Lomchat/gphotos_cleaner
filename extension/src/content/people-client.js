@@ -42,9 +42,15 @@ const INFLIGHT_BATCHES = 3;
  * landscape has no identity to find.
  */
 export function candidates(items, { minFaceScore = 0.35 } = {}) {
+  // Videos included. They were excluded on the reasoning that a video's
+  // thumbnail is one arbitrary frame — which is why the *quality* criteria
+  // exempt them, since a frame can be blurred or black while the video is
+  // neither. For recognition the argument inverts: a face legible in that
+  // frame is a real face. Applying the rule here was applying it to the one
+  // case where it does not hold, and it left every video of a protected
+  // person still on offer.
   return items.filter((it) =>
     it.url &&
-    !it.isVideo &&
     it.analyzed &&
     (it.features?.faceScore ?? 0) >= minFaceScore
   );
@@ -63,7 +69,8 @@ export function pending(items, options) {
  * far, and the pass is minutes long.
  */
 export async function scanFaces(items, {
-  onProgress, signal, send, save = db.saveFaces, inflight = INFLIGHT_BATCHES
+  onProgress, signal, send, save = db.saveFaces, inflight = INFLIGHT_BATCHES,
+  sampleVideo = false
 } = {}) {
   const totals = { scanned: 0, faces: 0, failed: 0, tooSmall: 0, errors: [] };
 
@@ -88,9 +95,18 @@ export async function scanFaces(items, {
       try {
         reply = await send({
           type: 'PEOPLE_BATCH',
+          sampleVideo,
           // Enlarged here, not in the catalogue: the stored URL stays the 176px
           // one the grid displays, and only this pass pays for more pixels.
-          items: slice.map((it) => ({ id: it.id, url: withThumbSize(it.url, PEOPLE_RENDER_PX) }))
+          items: slice.map((it) => ({
+          id: it.id,
+          url: withThumbSize(it.url, PEOPLE_RENDER_PX),
+          // Carried so the engine can decide to sample a video rather than
+          // read its poster; the catalogue is not visible from there.
+          isVideo: !!it.isVideo,
+          urlRaw: it.urlRaw || null,
+          duration: it.duration || 0
+        }))
         });
       } catch (err) {
         // One bad round trip is not the engine giving up: keep going, so a

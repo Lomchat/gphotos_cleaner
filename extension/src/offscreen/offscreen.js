@@ -259,7 +259,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // Parallel across the photos of a batch, and each photo fans its own faces
     // out across the recognition pool. The comment here used to claim that
     // second part while `analysePhoto` awaited each face in turn.
-    Promise.all(msg.items.map((item) => analysePhoto(item)))
+    Promise.all(msg.items.map((item) => analysePhoto(item, { sampleVideo: !!msg.sampleVideo })))
       .then((results) => sendResponse({ ok: true, results }))
       .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
     return true;
