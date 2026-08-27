@@ -136,3 +136,83 @@ test('the same face is worth more pixels in a larger rendition', () => {
   const box = [0.4, 0.4, 0.45, 0.5];
   assert.ok(faceWidthPx(box, 512) > faceWidthPx(box, 176));
 });
+
+/* ------------------------------------------------- framing a face on screen */
+
+/**
+ * A face shown in a round frame, cut from the photo it came from.
+ *
+ * The trap: boxes are normalised to the photo, so a box that is square in
+ * normalised space is not square on screen unless the photo is. `cropRect`
+ * above squares faces in pixel space for exactly that reason; a viewer that
+ * squares them in normalised space shows every face on a non-square photograph
+ * stretched, and framed slightly wrong. Which is nearly all of them.
+ */
+import { faceCropStyle } from '../src/analysis/face-crop.js';
+
+test('the picture keeps the shape it had', () => {
+  // The whole point. A 16:9 photo must still be displayed 16:9, or the face is
+  // squeezed by the ratio between the axes.
+  const wide = faceCropStyle([0.4, 0.4, 0.6, 0.6], 16 / 9);
+  assert.ok(Math.abs(wide.width / wide.height - 16 / 9) < 1e-6,
+    `displayed at ${(wide.width / wide.height).toFixed(3)}:1`);
+
+  const tall = faceCropStyle([0.4, 0.4, 0.6, 0.6], 3 / 4);
+  assert.ok(Math.abs(tall.width / tall.height - 3 / 4) < 1e-6);
+});
+
+test('a square photo is neither stretched nor squashed', () => {
+  const s = faceCropStyle([0.3, 0.3, 0.5, 0.5], 1);
+  assert.equal(s.width, s.height);
+});
+
+test('the face lands in the middle of the frame', () => {
+  // The offsets are what actually frame it, and they are easy to get subtly
+  // wrong: a crop shifted by a fraction still shows a face, just not the one
+  // that was clicked.
+  for (const aspect of [1, 16 / 9, 3 / 4]) {
+    const box = [0.5, 0.2, 0.7, 0.4];
+    const s = faceCropStyle(box, aspect);
+    // Where the box's centre ends up, as a fraction of the frame.
+    const cx = (s.left + ((box[0] + box[2]) / 2) * s.width) / 100;
+    const cy = (s.top + ((box[1] + box[3]) / 2) * s.height) / 100;
+    assert.ok(Math.abs(cx - 0.5) < 1e-6, `x at ${cx} for aspect ${aspect}`);
+    assert.ok(Math.abs(cy - 0.5) < 1e-6, `y at ${cy} for aspect ${aspect}`);
+  }
+});
+
+test('the frame holds more than the detector box', () => {
+  // Cropped exactly to the rectangle, a face loses its hair and its chin — and
+  // is harder to recognise, which matters when the click protects a person.
+  const box = [0.4, 0.4, 0.6, 0.6];
+  const s = faceCropStyle(box, 1);
+  const boxOnScreen = (box[2] - box[0]) * s.width / 100;
+  assert.ok(boxOnScreen < 0.85, `the box fills ${(boxOnScreen * 100).toFixed(0)}% of the frame`);
+  assert.ok(boxOnScreen > 0.35, 'and is not lost in it either');
+});
+
+test('a missing box shows the photo rather than nothing', () => {
+  // Protections made before boxes were stored still have to render.
+  const s = faceCropStyle(null, 1);
+  assert.ok(Number.isFinite(s.width) && Number.isFinite(s.left));
+  assert.ok(s.width <= 400, 'and not magnified to a single pixel');
+});
+
+test('a nonsensical box cannot magnify the picture without bound', () => {
+  // A zero-width box would divide by nothing and ask for an image millions of
+  // percent wide.
+  const s = faceCropStyle([0.5, 0.5, 0.5, 0.5], 1);
+  assert.ok(Number.isFinite(s.width) && s.width <= 40000, `width ${s.width}%`);
+});
+
+test('the shape survives the bounds, not only the ordinary case', () => {
+  // Clamping each axis on its own would clamp them by different amounts and
+  // quietly reintroduce exactly the stretching this is here to prevent.
+  for (const aspect of [16 / 9, 3 / 4, 2.4]) {
+    for (const box of [[0.5, 0.5, 0.5, 0.5], [0, 0, 1, 1], [0.1, 0.1, 0.99, 0.99]]) {
+      const s = faceCropStyle(box, aspect);
+      assert.ok(Math.abs(s.width / s.height - aspect) < 1e-6,
+        `aspect ${aspect}, box ${box.join(',')} displayed at ${(s.width / s.height).toFixed(3)}`);
+    }
+  }
+});

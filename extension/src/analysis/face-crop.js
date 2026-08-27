@@ -88,3 +88,58 @@ export function toFaceTensor(rgba, size = FACE_SIZE) {
 export function faceWidthPx(box, width) {
   return (box[2] - box[0]) * width;
 }
+
+/**
+ * Where to put a picture so one face fills a square frame.
+ *
+ * Returns percentages for an absolutely-positioned `<img>` inside a square
+ * container. Percentages rather than pixels because the frame is sized by CSS
+ * and this has no way to know how big it ended up.
+ *
+ * The subtlety that makes this worth its own function: boxes are normalised to
+ * the photo, so a box that is square *in normalised space* is not square on
+ * screen unless the photo is. `cropRect` above squares faces in pixel space,
+ * for the same reason — the model wants an undistorted face — and a viewer
+ * that squares them in normalised space instead shows a face stretched by the
+ * photo's aspect ratio, framed slightly wrong, on every non-square photograph.
+ * Which is nearly all of them.
+ *
+ * @param {number[]} box  [x1, y1, x2, y2], normalised
+ * @param {number} aspect width / height of the photo
+ * @param {number} margin extra room around the face, as a fraction
+ */
+export function faceCropStyle(box, aspect = 1, margin = CROP_MARGIN * 2.4) {
+  const [x1, y1, x2, y2] = Array.isArray(box) && box.length === 4 ? box : [0, 0, 1, 1];
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+
+  const w = Math.max(1e-4, x2 - x1);
+  const h = Math.max(1e-4, y2 - y1);
+  // Squared in pixels, then carried back into normalised space, where the two
+  // axes have different scales.
+  // Bounded once, then split — never once per axis, which would clamp the two
+  // by different amounts and quietly reintroduce the stretching this function
+  // exists to avoid.
+  //
+  // The ceiling keeps a huge box from asking for a picture smaller than its
+  // frame. The floor matters more: a degenerate box — zero width, or two
+  // identical corners — divides into a magnification of several hundred
+  // thousand per cent, which paints nothing and spends a great deal of memory
+  // doing it.
+  const low = 0.02 * Math.max(1, a);
+  const high = Math.max(low, 4 * Math.min(1, a));
+  const sidePx = Math.min(high, Math.max(low, Math.max(w * a, h) * (1 + margin)));
+  const sideX = sidePx / a;
+  const sideY = sidePx;
+
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
+  const zoomX = 1 / sideX;
+  const zoomY = 1 / sideY;
+
+  return {
+    width: zoomX * 100,
+    height: zoomY * 100,
+    left: -(cx - sideX / 2) * zoomX * 100,
+    top: -(cy - sideY / 2) * zoomY * 100
+  };
+}

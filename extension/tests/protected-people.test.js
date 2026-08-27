@@ -335,3 +335,23 @@ test('a photo whose faces were never read says so', () => {
   assert.match(body, /item\.peopleScanned/);
   assert.match(body, /have not been read/);
 });
+
+/* ------------------------------------------------- the panel sees the marks */
+
+test('the panel re-reads the catalogue after the marks are written', () => {
+  // The bug this fixes: regroup writes `protectedBy` into the database, but
+  // `recompute` filters the copy the panel is holding. Skipping the reload
+  // left protected photos in the grid until something else happened to
+  // refresh — which looked exactly like protection not working.
+  const start = SOURCE.indexOf('  async rebuildGroups(');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  async rereadAllFaces('));
+  assert.match(body, /await this\.reload\(\)/);
+  assert.equal(/if \(!quiet\) await this\.reload\(\)/.test(body), false,
+    'the reload is correctness, not presentation: it may not be gated on quiet');
+});
+
+test('quiet only silences the busy state', () => {
+  const start = SOURCE.indexOf('  async rebuildGroups(');
+  const body = SOURCE.slice(start, SOURCE.indexOf('  async rereadAllFaces('));
+  assert.match(body, /if \(!quiet\) \{[\s\S]{0,200}busy = 'people'/);
+});

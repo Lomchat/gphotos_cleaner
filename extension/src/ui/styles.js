@@ -965,7 +965,15 @@ footer .buttons button { flex: 1; }
   flex: none;
   background: var(--bg-input);
 }
-.faces-strip .crop img { position: absolute; max-width: none; object-fit: cover; }
+/* Every crop, not just the strip's: the Protected tab was left with a static,
+   width-constrained image and framed nothing at all.
+   object-fit must stay fill — anything that re-crops undoes the offsets. */
+.crop img {
+  position: absolute;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
+}
 .faces-strip .face .action { padding: 2px 9px; font-size: 10.5px; }
 
 /* ------------------------------------------------------- protected people */

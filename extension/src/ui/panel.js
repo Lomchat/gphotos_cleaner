@@ -34,6 +34,7 @@ import {
   matchProtected, makeProtected, protectedLabel, chooseIdentity
 } from '../analysis/protected-people.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
+import { faceCropStyle } from '../analysis/face-crop.js';
 import {
   candidates as peopleCandidates, pending as pendingPeople,
   scanFaces, regroup, forDisplay
@@ -1026,27 +1027,27 @@ export class Panel {
    * and by the Protected tab, because two copies of this arithmetic would
    * drift and only one of them would be noticed.
    */
-  buildFaceCrop(baseUrl, box, size = 512) {
-    const [x1, y1, x2, y2] = box || [0, 0, 1, 1];
-    const w = Math.max(1e-3, x2 - x1);
-    const h = Math.max(1e-3, y2 - y1);
-    // Widened: a box cropped exactly to the detector's rectangle cuts off the
-    // hair and the chin, and a face is harder to recognise without them —
-    // which matters when the click protects a person.
-    const side = Math.max(w, h) * 1.6;
-    const cx = (x1 + x2) / 2;
-    const cy = (y1 + y2) / 2;
-    const zoom = 1 / side;
+  buildFaceCrop(item, box, size = 512) {
+    const base = (item?.urlRaw || item?.url || '').split('=')[0];
+    // The photo's own shape, so a face is framed rather than stretched. Both
+    // come from the API listing; without them the crop falls back to square,
+    // which is what it always assumed.
+    const aspect = item?.width && item?.height ? item.width / item.height : 1;
+    const box2 = box || null;
+    const s = faceCropStyle(box2, aspect);
+
     return el('div', { class: 'crop' },
-      baseUrl
+      base
         ? el('img', {
-            src: `${baseUrl}=w${size}-h${size}`,
+            src: `${base}=w${size}-h${size}`,
             referrerPolicy: 'no-referrer',
-            style: `width:${zoom * 100}%; height:${zoom * 100}%;`
-              + `left:${-(cx - side / 2) * zoom * 100}%;`
-              + `top:${-(cy - side / 2) * zoom * 100}%;`
+            // Absent on protections made before boxes were stored: showing the
+            // whole photo is honest there, and better than a blank circle.
+            title: box2 ? null : 'Made before faces were kept — showing the photo',
+            style: `width:${s.width.toFixed(2)}%; height:${s.height.toFixed(2)}%;`
+              + `left:${s.left.toFixed(2)}%; top:${s.top.toFixed(2)}%;`
           })
-        : null);
+        : el('span', { class: 'muted tiny' }, '?'));
   }
 
   /**
@@ -1087,7 +1088,7 @@ export class Panel {
     host.replaceChildren(...faces.map((face) => {
       const hit = matchProtected(face.vector, this.state.protect, eps);
       return el('div', { class: `face${hit ? ' guarded' : ''}` },
-        this.buildFaceCrop(base, face.box),
+        this.buildFaceCrop(item, face.box),
         hit
           ? el('span', { class: 'muted tiny', title: `distance ${hit.distance.toFixed(2)}` },
               protectedLabel(hit.person, this.state.protect.indexOf(hit.person)))
@@ -2261,11 +2262,10 @@ export class Panel {
     const cards = el('div', { class: 'guard-list' });
     list.forEach((person, i) => {
       const photo = this.state.byId?.get(person.photoId);
-      const base = (photo?.urlRaw || photo?.url || '').split('=')[0] || null;
       const held = byPerson.get(person.id) || 0;
 
       cards.append(el('div', { class: 'guard' },
-        this.buildFaceCrop(base, person.box, 256),
+        this.buildFaceCrop(photo, person.box, 256),
         el('div', { class: 'guard-side' },
           el('input', {
             type: 'text',
@@ -3305,7 +3305,14 @@ export class Panel {
       });
       p.faceCount = faces;
       p.groups = forDisplay(groups, this.state.items);
-      if (!quiet) await this.reload();
+      // Always, never gated on `quiet`. regroup has just written `people` and
+      // `protectedBy` into the database, so the copy this panel is holding is
+      // stale by construction — and `recompute` below reads that copy. Skipping
+      // it left protected photos sitting in the grid until the next reload,
+      // which looked exactly like protection not working at all.
+      //
+      // `quiet` means "do not flash a busy state", and that is all it may mean.
+      await this.reload();
     } catch (err) {
       p.error = String(err?.message || err);
     } finally {

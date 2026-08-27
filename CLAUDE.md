@@ -34,6 +34,11 @@ has been the cause of four separate bugs. `paintSelection`, `paintProgress` and
 `paintActions` exist for it, and `log()` drops a target that has been
 disconnected rather than pretending.
 
+**No backticks in `styles.js`.** `PANEL_CSS` is a template literal, so one
+backtick — even inside a CSS comment quoting a property name — ends the string
+and breaks the whole panel. This has been done twice. `tests/ui-contract.test.js`
+catches it immediately; the point is to stop writing it.
+
 **Measure before claiming.** The fetch ceiling was "16 concurrent" until it was
 measured warm and turned out to be 48. Numbers in the README are real
 measurements; if you cannot measure it, do not put a number on it.
