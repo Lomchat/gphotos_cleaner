@@ -127,7 +127,7 @@ export async function saveFeatures(results) {
  * nobody" is a different answer from "never looked", and the "without" filter
  * depends on being able to tell them apart.
  */
-export async function savePeople(assignments) {
+export async function savePeople(assignments, protectedBy = new Map()) {
   const entries = [...assignments];
   if (!entries.length) return;
   const db = await open();
@@ -137,12 +137,39 @@ export async function savePeople(assignments) {
     for (const [id, groups] of entries) {
       const get = store.get(id);
       get.onsuccess = () => {
-        if (get.result) store.put({ ...get.result, people: groups, peopleScanned: 1 });
+        if (!get.result) return;
+        const guard = protectedBy.get(id);
+        // Written on the item so the sorting view can narrow its pool without
+        // loading every face vector on each reload — twenty thousand faces is
+        // forty megabytes, and this is read on every render.
+        //
+        // Removed rather than set false when the protection is lifted: a row
+        // carrying `protectedBy: null` still reads as a decision to anything
+        // that only checks for the field.
+        const { protectedBy: _was, ...rest } = get.result;
+        const row = { ...rest, people: groups, peopleScanned: 1 };
+        if (guard) row.protectedBy = guard;
+        store.put(row);
       };
     }
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });
+}
+
+/**
+ * The faces found in one photo.
+ *
+ * Keyed by the `photoId` index rather than filtered from everything: the
+ * viewer asks for this each time a photo is opened, and walking the whole
+ * store there would make opening a photo cost more the longer the library is.
+ */
+export async function getFacesForPhoto(photoId) {
+  const store = await tx(STORE_FACES, 'readonly');
+  const rows = await wrap(store.index('photoId').getAll(IDBKeyRange.only(photoId)));
+  return rows
+    .map((r) => ({ ...r, vector: toVector(r.vector) }))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 }
 
 /** Forget every group assignment, without touching the visual analysis. */

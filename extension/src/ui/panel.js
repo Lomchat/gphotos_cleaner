@@ -29,7 +29,10 @@ import {
   MEDIA_LENSES, applyLens, countMedia
 } from '../common/filters.js';
 import { formatDate } from '../common/dates.js';
-import { groupLabel, SHIPPED_EPS } from '../analysis/cluster.js';
+import { groupLabel, SHIPPED_EPS, toVector, normalise, distance } from '../analysis/cluster.js';
+import {
+  matchProtected, makeProtected, protectedLabel
+} from '../analysis/protected-people.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 import {
   candidates as peopleCandidates, pending as pendingPeople,
@@ -54,6 +57,21 @@ const PEOPLE_KEY = 'gpc:people';
  * continue from.
  */
 const PROGRESS_KEY = 'gpc:progress';
+
+/**
+ * People whose photos are never offered for deletion.
+ *
+ * Its own key, and — like the progress mark — **not** cleared by the reset.
+ * Everything else the extension stores can be rebuilt by running again. This
+ * cannot: it is a list of decisions about people, taken one at a time while
+ * looking at their faces, and a reset that quietly dropped it would leave the
+ * next run offering up exactly the photos it was told never to touch.
+ *
+ * That is also why it holds vectors rather than group ids. Group ids are
+ * positional and rebuilt on every regroup, so a stored id would come back
+ * pointing at somebody else.
+ */
+const PROTECTED_KEY = 'gpc:protected';
 
 const DEFAULT_SETTINGS = {
   // 176px: perceptual hashes and the sharp/blurry ordering are stable at this
@@ -82,6 +100,10 @@ const DEFAULT_SETTINGS = {
   // criteria union in the default mode, so "only videos" as a checkbox would
   // have meant "videos or whatever else is ticked".
   mediaLens: 'all',
+  // Photos holding a protected face stay out of the grid. Switchable, because
+  // "show me what I have protected" is a reasonable thing to want to check —
+  // and a filter you cannot see the other side of is one you stop trusting.
+  hideProtected: true,
   lastAnalysisSplit: null, // where the per-photo work actually goes
   peopleEps: SHIPPED_EPS // how alike two faces must be to count as one person
 };
@@ -345,6 +367,10 @@ export class Panel {
       // { oldestTs, updatedAt } — how far back the library has ever been
       // walked. Survives a reset; see PROGRESS_KEY.
       progress: null,
+      // People whose photos are never offered. Survives a reset too.
+      protect: [],
+      // Faces found in the photo currently open, for the strip under it.
+      viewingFaces: [],
       // The photo being looked at full size, if any.
       viewing: null,
       faceModel: null,
@@ -415,9 +441,10 @@ export class Panel {
 
   async loadPersisted() {
     try {
-      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY, PROGRESS_KEY]);
+      const got = await storageGet([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY, PROGRESS_KEY, PROTECTED_KEY]);
       if (got[SETTINGS_KEY]) Object.assign(this.state.settings, migrateSettings(got[SETTINGS_KEY]));
       if (got[PROGRESS_KEY]) this.state.progress = got[PROGRESS_KEY];
+      if (Array.isArray(got[PROTECTED_KEY])) this.state.protect = got[PROTECTED_KEY];
       if (Array.isArray(got[PEOPLE_KEY])) {
         // Only names and centroids persist. Groups themselves are rebuilt from
         // the stored faces, because their ids are positional.
@@ -653,6 +680,7 @@ export class Panel {
           text: 'All', onclick: () => { this.state.filters.mode = 'all'; this.onFilterChange(); }
         })),
       el('h3', {}, 'Criteria'));
+    put(side, this.buildProtectedSection());
     put(side, this.buildKeptNote());
     for (const crit of CRITERIA) side.append(this.buildCriterion(crit));
     put(side, this.buildPeopleSection());
@@ -964,6 +992,9 @@ export class Panel {
           el('button', { class: 'icon-btn', text: '✕', title: 'Close (Esc)', onclick: close })),
         put(stage, media, (this.viewerZoomLabel = el('span', { class: 'zoom-level' }))),
         el('footer', {},
+          (this.viewerFaces = el('div', { class: 'faces-strip' },
+            el('span', { class: 'muted tiny' }, 'Reading faces…'))),
+          el('span', { class: 'spacer' }),
           el('a', {
             class: 'action',
             href: `https://photos.google.com/photo/${encodeURIComponent(item.id)}`,
@@ -979,6 +1010,80 @@ export class Panel {
     // scroll matters: the grid behind is a list being worked through, and
     // focusing an element inside a fixed overlay can otherwise drag it.
     this.viewer.focus({ preventScroll: true });
+    // Asked for after the picture is on screen: it is a second database read,
+    // and the photo should not wait behind it.
+    this.paintViewerFaces(item, this.viewerFaces);
+  }
+
+  /**
+   * The faces in the photo being viewed, and what can be done about them.
+   *
+   * Loaded per photo rather than held: the face store carries a 2 KB vector
+   * each, and the viewer opens on one photo at a time.
+   *
+   * The crop is CSS rather than a canvas. Boxes are normalised, so scaling the
+   * rendition by 1/width and shifting it by the box origin puts the face in
+   * the frame — no second decode, no second fetch, and it works the same for
+   * the poster frame of a video.
+   */
+  async paintViewerFaces(item, host) {
+    if (!host || !host.isConnected) return;
+    let faces = [];
+    try {
+      faces = await db.getFacesForPhoto(item.id);
+    } catch {
+      return;
+    }
+    // The photo may have been closed, or another opened, while this was
+    // loading — writing into a detached strip would report to nobody.
+    if (!host.isConnected || this.state.viewing?.id !== item.id) return;
+    this.state.viewingFaces = faces;
+
+    if (!faces.length) {
+      host.replaceChildren(el('span', { class: 'muted tiny' },
+        item.peopleScanned
+          ? 'No face found in this photo.'
+          : 'Faces have not been read in this photo yet.'));
+      return;
+    }
+
+    const base = (item.urlRaw || item.url || '').split('=')[0];
+    const eps = this.state.settings.peopleEps;
+
+    host.replaceChildren(...faces.map((face) => {
+      const hit = matchProtected(face.vector, this.state.protect, eps);
+      const [x1, y1, x2, y2] = face.box || [0, 0, 1, 1];
+      const w = Math.max(1e-3, x2 - x1);
+      const h = Math.max(1e-3, y2 - y1);
+      // Widened a little: a box cropped exactly to the detector's rectangle
+      // cuts the hair and the chin off, and a face is harder to recognise
+      // without them — which matters when the click protects a person.
+      const pad = 0.6;
+      const side = Math.max(w, h) * (1 + pad);
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
+      const zoom = 1 / side;
+
+      return el('div', { class: `face${hit ? ' guarded' : ''}` },
+        el('div', { class: 'crop' },
+          el('img', {
+            src: `${base}=w512-h512`,
+            referrerPolicy: 'no-referrer',
+            style: `width:${zoom * 100}%; height:${zoom * 100}%;`
+              + `left:${-(cx - side / 2) * zoom * 100}%;`
+              + `top:${-(cy - side / 2) * zoom * 100}%;`
+          })),
+        hit
+          ? el('span', { class: 'muted tiny', title: `distance ${hit.distance.toFixed(2)}` },
+              protectedLabel(hit.person, this.state.protect.indexOf(hit.person)))
+          : el('button', {
+              class: 'action',
+              text: 'Protect',
+              title: 'Never offer photos of this person again — kept even through a reset',
+              disabled: !!this.state.busy,
+              onclick: () => this.protectFace(face, item)
+            }));
+    }));
   }
 
   /**
@@ -1102,6 +1207,8 @@ export class Panel {
 
   closeViewer() {
     this.state.viewing = null;
+    this.state.viewingFaces = [];
+    this.viewerFaces = null;
     this.viewerTickButton = null;
     this.viewerTickId = null;
     this.viewerZoomLabel = null;
@@ -1323,7 +1430,8 @@ export class Panel {
       return { selectable: new Set(), groups: new Map(), keepers: new Set() };
     }
     const key = `${f.dupDistance}|${f.dupWindow}|${f.dupKeep}|${this.state.items.length}`
-      + `|${this.state.settings.hideKept}|${this.state.settings.mediaLens}`;
+      + `|${this.state.settings.hideKept}|${this.state.settings.mediaLens}`
+      + `|${this.state.settings.hideProtected}|${this.state.protect.length}`;
     if (!this.dupCache || this.dupCache.key !== key) {
       const groups = clusterDuplicates(this.state.items, {
         distance: f.dupDistance, window: f.dupWindow
@@ -1352,7 +1460,11 @@ export class Panel {
     const decided = this.state.settings.hideKept
       ? this.state.items.filter((it) => !it.kept)
       : this.state.items;
-    const pool = applyLens(decided, this.state.settings.mediaLens);
+    const guarded = this.state.settings.hideProtected
+      ? decided.filter((it) => !it.protectedBy)
+      : decided;
+    this.state.protectedCount = decided.length - guarded.length;
+    const pool = applyLens(guarded, this.state.settings.mediaLens);
     this.state.keptCount = this.state.items.length - this.state.items.filter((it) => !it.kept).length;
 
     const dup = this.duplicateSelection();
@@ -3074,7 +3186,11 @@ export class Panel {
       // across the rebuild; ids are positional and cannot carry a name.
       const { groups, faces } = await regroup({
         previous: p.groups,
-        eps: this.state.settings.peopleEps
+        eps: this.state.settings.peopleEps,
+        // The same threshold, deliberately: "is this the same person?" is one
+        // question, and two numbers that must agree but can be set apart is a
+        // bug waiting to be filed.
+        protect: this.state.protect
       });
       p.faceCount = faces;
       p.groups = forDisplay(groups, this.state.items);
@@ -3347,9 +3463,11 @@ export class Panel {
     }
     try {
       await db.clearAll();
-      // PROGRESS_KEY is absent on purpose: how far back the library has been
-      // walked is a record of work done, not of what was found, and no rerun
-      // can recover it. Its own button forgets it.
+      // PROGRESS_KEY and PROTECTED_KEY are absent on purpose. Neither can be
+      // recovered by running again: one is a record of work done, the other a
+      // list of decisions about people. A reset that dropped the second would
+      // leave the next run offering exactly the photos it was told never to
+      // touch. Both have their own way to be forgotten.
       await storageRemove([SETTINGS_KEY, FILTERS_KEY, PEOPLE_KEY]);
     } catch (err) {
       this.flashStatus(`Reset failed: ${err.message}`, 'error', 8000);
@@ -3754,6 +3872,129 @@ export class Panel {
       await this.reload();
       this.renderAll();
     }
+  }
+
+  /* ------------------------------------------------------- protected people */
+
+  /**
+   * Never offer photos of this face again.
+   *
+   * The vector stored is a group centroid when the face belongs to one, and
+   * the lone face otherwise. A centroid has averaged away the lighting and the
+   * angle of any single shot, so it recognises the same person in photographs
+   * that look nothing like the one being viewed — which is the whole promise
+   * being made here. Protecting from one face still works; it simply
+   * generalises less, and the panel says which kind it is.
+   */
+  async protectFace(face, item) {
+    const eps = this.state.settings.peopleEps;
+    if (matchProtected(face.vector, this.state.protect, eps)) return;
+
+    // The nearest group, if this face sits in one.
+    let centroid = face.vector;
+    let from = 'face';
+    let name = null;
+    let best = null;
+    let bestDist = Infinity;
+    for (const group of this.state.people.groups) {
+      if (!group.centroid) continue;
+      try {
+        const d = distance(normalise(toVector(face.vector)), normalise(toVector(group.centroid)));
+        if (d < bestDist) { bestDist = d; best = group; }
+      } catch { /* a vector that did not survive storage */ }
+    }
+    if (best && bestDist <= eps) {
+      centroid = best.centroid;
+      from = 'group';
+      name = best.name || null;
+    }
+
+    this.state.protect = [
+      ...this.state.protect,
+      makeProtected({ centroid, name, from, photoId: item?.id ?? null, now: Date.now() })
+    ];
+    await this.persistProtected();
+    // Re-marks every photo in the catalogue against the new list. This is the
+    // expensive part — it walks every stored face — and it is why protecting
+    // is a deliberate click rather than something that happens on hover.
+    await this.rebuildGroups({ quiet: true });
+    if (this.state.viewing) this.openViewer(this.state.viewing);
+    this.flashStatus('Face protected — their photos are hidden', 'done', 5000);
+    this.renderAll();
+  }
+
+  /** Lift a protection. The photos come back on the next regroup. */
+  async unprotect(id) {
+    this.state.protect = this.state.protect.filter((p) => p.id !== id);
+    await this.persistProtected();
+    await this.rebuildGroups({ quiet: true });
+    if (this.state.viewing) this.openViewer(this.state.viewing);
+    this.renderAll();
+  }
+
+  async renameProtected(id, name) {
+    const person = this.state.protect.find((p) => p.id === id);
+    if (!person) return;
+    person.name = name.trim() || null;
+    await this.persistProtected();
+    this.renderAll();
+  }
+
+  persistProtected() {
+    return storageSet({ [PROTECTED_KEY]: this.state.protect })
+      .catch((err) => this.noteContext(err));
+  }
+
+  /**
+   * The protected list, and the way out of it.
+   *
+   * Shown wherever the hiding is happening, because a grid quietly missing a
+   * thousand photos with the explanation on another tab is a grid people
+   * conclude is broken.
+   */
+  buildProtectedSection() {
+    const list = this.state.protect;
+    if (!list.length) return null;
+    const s = this.state.settings;
+    const hidden = this.state.protectedCount || 0;
+
+    const rows = list.map((person, i) => el('div', { class: 'person' },
+      el('input', {
+        type: 'text',
+        value: person.name || '',
+        placeholder: protectedLabel(person, i),
+        title: person.from === 'group'
+          ? 'Protected from a whole group of faces'
+          : 'Protected from a single face — it may not recognise them in very different photos',
+        onchange: (e) => this.renameProtected(person.id, e.target.value)
+      }),
+      el('span', { class: 'muted tiny' }, person.from === 'group' ? 'group' : 'one face'),
+      el('button', {
+        class: 'reset', text: '✕',
+        title: 'Stop protecting this person',
+        onclick: () => this.unprotect(person.id)
+      })));
+
+    return el('div', { style: 'margin-top:14px' },
+      el('h3', {}, 'Protected'),
+      el('div', { class: 'muted tiny', style: 'margin-bottom:6px' },
+        hidden
+          ? `${nf(hidden)} photo(s) of these people are kept out of the grid.`
+          : 'No photo currently matches these people.'),
+      el('div', { class: 'people' }, rows),
+      el('label', { class: 'switch', style: 'margin-top:8px' },
+        el('input', {
+          type: 'checkbox', checked: !s.hideProtected,
+          onchange: (e) => {
+            s.hideProtected = !e.target.checked;
+            this.persist();
+            this.dupCache = null;
+            this.recompute();
+            this.renderAll();
+          }
+        }),
+        el('span', {}, 'Show them anyway'),
+        el('small', {}, 'they stay protected; this only puts them back on screen')));
   }
 
   /* ------------------------------------------------------------- decisions */

@@ -126,7 +126,7 @@ test('every class used by the panel is defined', () => {
     'people', 'person', 'faces', 'field', 'card-title', 'tiny',
     'sorts', 'sortbar', 'ranged',
     // Blocks, the facts on a tile, the full-size view and the hint mark.
-    'group-block', 'facts', 'zoom', 'viewer', 'sheet', 'stage', 'backdrop', 'why'
+    'group-block', 'faces-strip', 'crop', 'guarded', 'facts', 'zoom', 'viewer', 'sheet', 'stage', 'backdrop', 'why'
   ];
   for (const cls of critical) {
     assert.ok(new RegExp(`\\.${cls}[\\s,:.{\\[]`).test(PANEL_CSS),

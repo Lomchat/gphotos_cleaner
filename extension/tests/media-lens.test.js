@@ -123,7 +123,8 @@ test('the counters see the same pool the filter does', () => {
 test('the lens narrows the same pool decisions do', () => {
   const start = SOURCE.indexOf('  recompute() {');
   const body = SOURCE.slice(start, SOURCE.indexOf('  renderAll() {', start));
-  assert.match(body, /const pool = applyLens\(decided, this\.state\.settings\.mediaLens\)/);
+  assert.match(body, /const pool = applyLens\(guarded, this\.state\.settings\.mediaLens\)/,
+    'the lens is the last narrowing, after decisions and protected people');
   assert.match(body, /countPerCriterion\(pool,/);
   assert.match(body, /applyFilters\(pool,/);
 });

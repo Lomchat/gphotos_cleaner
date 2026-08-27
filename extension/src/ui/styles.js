@@ -932,7 +932,41 @@ footer .buttons button { flex: 1; }
   pointer-events: none;
 }
 .viewer .zoom-level:empty { display: none; }
-.viewer footer { display: flex; gap: 8px; }
+.viewer footer { display: flex; gap: 10px; align-items: center; }
+.viewer footer .spacer { flex: 1; }
+
+/* The faces found in the photo on screen, each one protectable. */
+.faces-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 34px;
+}
+.faces-strip .face {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-raised);
+}
+.faces-strip .face.guarded { border-color: var(--mint); }
+/* The crop is a window onto the rendition already fetched for the stage: the
+   box is normalised, so scaling and offsetting the same image puts the face in
+   the frame with no second decode and no second request. */
+.faces-strip .crop {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex: none;
+  background: var(--bg-input);
+}
+.faces-strip .crop img { position: absolute; max-width: none; object-fit: cover; }
+.faces-strip .face .action { padding: 2px 9px; font-size: 10.5px; }
 .viewer footer .action { text-decoration: none; }
 
 /* ------------------------------------------------- the explanation mark */

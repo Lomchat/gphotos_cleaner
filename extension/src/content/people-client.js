@@ -13,6 +13,7 @@
 import * as db from './db.js';
 import { withThumbSize } from './dom-adapter.js';
 import { clusterFaces, carryNames, peopleByPhoto, DEFAULT_EPS } from '../analysis/cluster.js';
+import { protectedPhotos } from '../analysis/protected-people.js';
 import { PEOPLE_RENDER_PX } from '../analysis/people-runner.js';
 
 const BATCH_SIZE = 12;
@@ -139,15 +140,24 @@ export async function scanFaces(items, {
  * person is defined by all their photos, and clustering only the newcomers
  * would invent a second group for someone already known.
  */
-export async function regroup({ eps = DEFAULT_EPS, previous = [] } = {}) {
+export async function regroup({ eps = DEFAULT_EPS, previous = [], protect = [] } = {}) {
   const faces = await db.getAllFaces();
-  if (!faces.length) return { groups: [], faces: 0 };
+  if (!faces.length) return { groups: [], faces: 0, protectedCount: 0 };
 
   const { groups } = clusterFaces(
     faces.map((f) => ({ id: f.id, photoId: f.photoId, vector: f.vector })),
     { eps }
   );
   carryNames(groups, previous);
+
+  // Marked here because this is the one place that already holds every face
+  // vector, and it re-runs whenever anything that could change the answer does
+  // — a new face pass, a moved threshold, a protection added or lifted.
+  //
+  // Against faces rather than groups: a group needs two faces, so a protected
+  // person appearing once in a photo would form none and that photo would slip
+  // through — the one failure this feature exists to prevent.
+  const guarded = protectedPhotos(faces, protect, eps);
 
   const byPhoto = peopleByPhoto(groups);
   const scanned = new Set(faces.map((f) => f.photoId));
@@ -156,8 +166,8 @@ export async function regroup({ eps = DEFAULT_EPS, previous = [] } = {}) {
   // makes "without this person" trustworthy rather than a guess.
   for (const photoId of scanned) assignments.set(photoId, byPhoto.get(photoId) || []);
 
-  await db.savePeople(assignments);
-  return { groups, faces: faces.length, assignments };
+  await db.savePeople(assignments, guarded);
+  return { groups, faces: faces.length, assignments, protectedCount: guarded.size };
 }
 
 /** Strip the heavy centroid before handing groups to the panel's state. */

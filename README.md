@@ -122,6 +122,28 @@ grid and stops, leaving the last click to you.
 **Keep the rest** marks everything shown but not selected as decided, so it
 stays out of the next run. That is what makes this usable more than once.
 
+### Protecting a person
+
+Open any photo and the faces found in it appear along the bottom. **Protect**
+one and no photo containing that person is ever offered again — they are kept
+out of the grid entirely, in this run and every run after it.
+
+A protection stores the **face**, not a group id. Group ids are positional and
+rebuilt every time the faces are regrouped, so an id saved today would point at
+somebody else tomorrow — shielding the wrong person and exposing the one it was
+meant to protect. It matches whole faces rather than groups for the same kind of
+reason: a group needs two faces to exist, so a protected person appearing once
+in a photo would form none and that photo would slip through.
+
+Where possible the identity taken is the centroid of that person's whole group,
+which has averaged away the lighting and angle of any single shot; the strip
+says whether a protection came from a group or from one face.
+
+**The reset does not clear this**, deliberately — a reset that dropped it would
+leave the next run offering exactly the photos it was told never to touch. Each
+protection has its own ✕, and *Show them anyway* puts the photos back on screen
+without lifting anything.
+
 <br>
 
 ## What it can detect
@@ -234,7 +256,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 698 tests, no dependencies
+npm test        # 727 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.
