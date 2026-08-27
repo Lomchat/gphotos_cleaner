@@ -8,6 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { migrateSettings } from '../src/ui/panel.js';
 
@@ -60,4 +61,51 @@ test('migration does not mutate the input object', () => {
   const input = { scanMaxPerPass: 1000 };
   migrateSettings(input);
   assert.deepEqual(input, { scanMaxPerPass: 1000 }, 'the stored record stays readable');
+});
+
+/* ------------------------------------------------- correcting a bad threshold */
+
+/**
+ * A default only reaches people who have never saved a setting.
+ *
+ * Everyone else keeps the old number for ever — which is exactly the case
+ * where it does the most harm, because they are the people who have been using
+ * the thing. An earlier build shipped a grouping threshold of 0.75; measured
+ * afterwards on a real library it put 96% of every face into a single group,
+ * so people could not be told apart at all. That is not a taste in how strict
+ * grouping should be, it is an unusable value, and it has to be corrected for
+ * the people already carrying it.
+ */
+test('a stored threshold above the measured floor is corrected', () => {
+  const out = migrateSettings({ peopleEps: 0.75 });
+  assert.ok(out.peopleEps <= 0.63, `left at ${out.peopleEps}`);
+  assert.equal(out.epsRetunedFrom, 0.75, 'and what it was is remembered, to be shown');
+});
+
+test('a usable threshold is left exactly as it was', () => {
+  const out = migrateSettings({ peopleEps: 0.5 });
+  assert.equal(out.peopleEps, 0.5);
+  assert.equal(out.epsRetunedFrom, undefined, 'nothing to explain');
+});
+
+test('the correction happens once, never again', () => {
+  // Otherwise a deliberate choice made afterwards would be undone on every
+  // reload, which is worse than the bug: a setting that will not stay put.
+  const chosen = migrateSettings({ peopleEps: 0.7, epsRetunedFrom: 0.75 });
+  assert.equal(chosen.peopleEps, 0.7, 'a later deliberate value is the users to keep');
+});
+
+test('a fresh install is not told about a correction that never happened', () => {
+  assert.equal(migrateSettings({}).epsRetunedFrom, undefined);
+});
+
+test('the change is shown, with the way back', () => {
+  // Moving somebody's slider in silence is how a tool stops being trusted,
+  // even when the move is right.
+  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  buildEpsControl() {');
+  const body = source.slice(start, source.indexOf('  countsLabel()', start));
+  assert.match(body, /epsRetunedFrom/);
+  assert.match(body, /Put it back at/, 'and it can be put back');
+  assert.match(body, /96% of every face/, 'with the measurement that justified it');
 });

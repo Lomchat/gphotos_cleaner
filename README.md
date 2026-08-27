@@ -244,6 +244,10 @@ shipped 0.75 on the argument that a real library is messier than a portrait
 set. It is — but the measurement says the opposite of what that argument
 predicted, and 0.75 put 16% of stranger pairs inside the threshold.
 
+A stored value above 0.63 is corrected once, because a changed default reaches
+only people who have never saved a setting — which is exactly the people it
+does not need to reach. The panel says what moved and offers to put it back.
+
 **The merge pass is stricter than the assignment**, at 0.8× the threshold.
 Merging is transitive — A joins B, then AB joins C — so the same bar lets a
 cluster walk along a library's near-misses until it holds everybody. At 0.75
@@ -306,7 +310,7 @@ this and offers a reload rather than failing silently.
 
 ```bash
 cd extension
-npm test        # 768 tests, no dependencies
+npm test        # 773 tests, no dependencies
 ```
 
 No build step. The extension loads as-is.

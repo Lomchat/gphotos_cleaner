@@ -146,6 +146,21 @@ export function migrateSettings(stored) {
   // The old time-window key meant the opposite (keep only recent items).
   // Carrying it over would silently invert the scope, so drop it instead.
   for (const key of RETIRED_SETTINGS) delete out[key];
+
+  // A stored threshold above the measured stranger floor is corrected once.
+  //
+  // An earlier build shipped 0.75, and a default only reaches people who have
+  // never saved a setting — everyone else keeps the old number for ever, which
+  // is precisely the case where it does the most harm. Measured afterwards on
+  // a real library, 0.75 put 96% of every face in a single group: not a taste
+  // in how strict grouping should be, an unusable value.
+  //
+  // Once, and recorded. Anything chosen deliberately after this is left alone,
+  // and the panel says what happened rather than moving a slider in silence.
+  if (out.epsRetunedFrom === undefined && Number(out.peopleEps) > 0.63) {
+    out.epsRetunedFrom = out.peopleEps;
+    out.peopleEps = DEFAULT_EPS;
+  }
   return out;
 }
 
@@ -2938,6 +2953,29 @@ export class Panel {
             this.rebuildGroups();
           }
         })),
+      s.epsRetunedFrom
+        ? el('div', { class: 'banner info' },
+            el('b', {}, `Moved from ${Number(s.epsRetunedFrom).toFixed(2)} to ${value.toFixed(2)}. `),
+            'Measured on a real library, the old value put 96% of every face in one '
+            + 'group — so people could not be told apart at all. Your groups have been '
+            + 'rebuilt at the new value.',
+            el('div', { class: 'row', style: 'margin-top:8px' },
+              el('button', {
+                class: 'action', text: 'Fine',
+                onclick: () => { delete s.epsRetunedFrom; this.persist(); this.renderAll(); }
+              }),
+              el('span', { class: 'spacer' }),
+              el('button', {
+                class: 'action', text: `Put it back at ${Number(s.epsRetunedFrom).toFixed(2)}`,
+                title: 'Your library, your call — the measurement is on this page either way',
+                onclick: () => {
+                  s.peopleEps = Number(s.epsRetunedFrom);
+                  delete s.epsRetunedFrom;
+                  this.persist();
+                  this.rebuildGroups();
+                }
+              })))
+        : null,
       el('div', { class: risky ? 'banner warn' : 'muted tiny' },
         risky
           ? 'Past the point where different people start sharing a group — measured, 16% of stranger pairs sit inside 0.75. Check the "mixed?" flags before acting on a filter, or lower this.'
