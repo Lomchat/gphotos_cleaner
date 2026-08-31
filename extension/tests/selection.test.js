@@ -633,3 +633,49 @@ test('the image inside is positioned and unconstrained', () => {
   assert.match(rule, /max-width:\s*none/);
   assert.match(rule, /object-fit:\s*fill/);
 });
+
+/* --------------------------------------------- the budget needs a way out */
+
+/**
+ * Only three hundred tiles are drawn at once, which is a display budget and
+ * not a filter. The way past it has to reach every view.
+ *
+ * It once lived inside the branch that draws a flat grid, so an order that
+ * groups — by day, by person, by likeness — spent the budget on its first few
+ * blocks, dropped every block past them without a word, and offered no way to
+ * ask for more. Sorted oldest-first that reads as a library which stops after
+ * about a month.
+ */
+test('the way past the render budget is outside the branch that splits the grid', () => {
+  const start = PANEL_SOURCE.indexOf('    } else if (this.state.sections) {');
+  const body = PANEL_SOURCE.slice(start, start + 1600);
+
+  // The button must not sit in either arm — both are cut by the same budget.
+  const flatArm = body.slice(body.indexOf('} else {'), body.indexOf('    // Outside the branch'));
+  assert.equal(/Show more/.test(flatArm), false, 'the flat arm must not own it');
+  assert.match(body.slice(body.indexOf('    // Outside the branch')), /Show more \(\$\{nf\(left\)\} left\)/);
+});
+
+test('what is left is counted against the whole list, not the blocks drawn', () => {
+  const start = PANEL_SOURCE.indexOf('    // Outside the branch');
+  const body = PANEL_SOURCE.slice(start, start + 900);
+  assert.match(body, /this\.state\.filtered\.length > shown\.length/);
+  assert.match(body, /const left = this\.state\.filtered\.length - shown\.length/);
+});
+
+test('a long list can be opened in one go rather than six hundred at a time', () => {
+  // Four thousand photos is seven presses otherwise, and the count on the
+  // button is the only thing telling you the list did not end.
+  const start = PANEL_SOURCE.indexOf('    // Outside the branch');
+  const body = PANEL_SOURCE.slice(start, start + 1800);
+  assert.match(body, /Show all \$\{nf\(this\.state\.filtered\.length\)\}/);
+  assert.match(body, /this\.state\.renderLimit = this\.state\.filtered\.length/);
+  assert.match(body, /left > 600/, 'and it is not offered when it would do nothing');
+});
+
+test('a block says how many of its photos are drawn when not all are', () => {
+  // Without it a half-drawn day looks like a day with fewer photos in it.
+  const start = PANEL_SOURCE.indexOf('  buildSections(shown) {');
+  const body = PANEL_SOURCE.slice(start, start + 1800);
+  assert.match(body, /count < section\.items\.length \? `\$\{nf\(count\)\} shown`/);
+});

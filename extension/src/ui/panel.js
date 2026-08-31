@@ -745,11 +745,27 @@ export class Panel {
       const grid = el('div', { class: 'grid' });
       shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
       main.append(grid);
-      if (this.state.filtered.length > shown.length) {
+    }
+
+    // Outside the branch, because a grid split into blocks is cut by the same
+    // budget as a flat one. Inside, it reached only the flat view: an order
+    // that groups — by day, by person, by likeness — spent the three hundred
+    // tiles on its first few blocks, dropped every block past them without a
+    // word, and left no way to ask for more. Sorted oldest-first that reads as
+    // a library which stops after a month.
+    if (this.state.filtered.length > shown.length) {
+      const left = this.state.filtered.length - shown.length;
+      main.append(el('button', {
+        class: 'action wide', style: 'margin-top:12px',
+        text: `Show more (${nf(left)} left)`,
+        onclick: () => { this.state.renderLimit += 600; this.renderAll(); }
+      }));
+      if (left > 600) {
         main.append(el('button', {
-          class: 'action wide', style: 'margin-top:12px',
-          text: `Show more (${nf(this.state.filtered.length - shown.length)} left)`,
-          onclick: () => { this.state.renderLimit += 600; this.renderAll(); }
+          class: 'action wide', style: 'margin-top:6px',
+          text: `Show all ${nf(this.state.filtered.length)}`,
+          title: 'Drawing several thousand tiles at once takes a moment',
+          onclick: () => { this.state.renderLimit = this.state.filtered.length; this.renderAll(); }
         }));
       }
     }
