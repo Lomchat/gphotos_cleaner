@@ -30,9 +30,16 @@ by tests because nothing else documents them.
 **Repaint, never re-render.** A running job holds references to the nodes it
 writes into. Rebuilding a tab replaces them, the job then reports to detached
 elements, and the grid scrolls back to the top under whoever was using it. This
-has been the cause of four separate bugs. `paintSelection`, `paintProgress` and
-`paintActions` exist for it, and `log()` drops a target that has been
-disconnected rather than pretending.
+has been the cause of five separate bugs — the last was *Show more*, which sent
+the user back to the top of the very list they had scrolled to the bottom of in
+order to press it. `paintSelection`, `paintProgress`, `paintActions` and
+`paintMore` exist for this, `showMore` appends rather than rebuilding, and
+`log()` drops a target that has been disconnected rather than pretending.
+
+**Grid arithmetic is run, not read.** `tests/helpers/dom.js` is enough of a DOM
+to execute the painters and builders under Node. Use it for appends, tile
+indices and block boundaries: an off-by-one there draws a duplicate row or skips
+a photo, and matching the source for a right-looking regex never sees that.
 
 **No backticks in `styles.js`.** `PANEL_CSS` is a template literal, so one
 backtick — even inside a CSS comment quoting a property name — ends the string
