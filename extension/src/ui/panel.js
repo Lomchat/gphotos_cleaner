@@ -700,7 +700,10 @@ export class Panel {
       // is invisible, and would hide the fact that it never ran.
       this.modalTicked = null;
       this.modalWeight = null;
-      this.sectionButtons = null;
+      this.sectionBlocks = null;
+      this.flatGrid = null;
+      this.moreBox = null;
+      this.modalTickAll = null;
       this.modalTickButton = null;
       this.modalBinButton = null;
       return;
@@ -730,6 +733,10 @@ export class Panel {
     put(side, this.buildPeopleSection());
 
     const main = el('div', { class: 'main' });
+    // Cleared before either arm fills them, so a stale reference from the last
+    // render can never be appended into.
+    this.sectionBlocks = null;
+    this.flatGrid = null;
     // The order bar sits above the grid it reorders, not in the side column
     // with the criteria: those two do different jobs, and mixing them invites
     // reading an order as one more thing that changes the selection.
@@ -742,9 +749,9 @@ export class Panel {
     } else if (this.state.sections) {
       put(main, this.buildSections(shown));
     } else {
-      const grid = el('div', { class: 'grid' });
-      shown.forEach((item, i) => grid.append(this.buildThumb(item, i)));
-      main.append(grid);
+      this.flatGrid = el('div', { class: 'grid' });
+      shown.forEach((item, i) => this.flatGrid.append(this.buildThumb(item, i)));
+      main.append(this.flatGrid);
     }
 
     // Outside the branch, because a grid split into blocks is cut by the same
@@ -753,22 +760,12 @@ export class Panel {
     // tiles on its first few blocks, dropped every block past them without a
     // word, and left no way to ask for more. Sorted oldest-first that reads as
     // a library which stops after a month.
-    if (this.state.filtered.length > shown.length) {
-      const left = this.state.filtered.length - shown.length;
-      main.append(el('button', {
-        class: 'action wide', style: 'margin-top:12px',
-        text: `Show more (${nf(left)} left)`,
-        onclick: () => { this.state.renderLimit += 600; this.renderAll(); }
-      }));
-      if (left > 600) {
-        main.append(el('button', {
-          class: 'action wide', style: 'margin-top:6px',
-          text: `Show all ${nf(this.state.filtered.length)}`,
-          title: 'Drawing several thousand tiles at once takes a moment',
-          onclick: () => { this.state.renderLimit = this.state.filtered.length; this.renderAll(); }
-        }));
-      }
-    }
+    //
+    // Its own box, held, so showing more can rewrite the buttons in place
+    // rather than through a render — and so new tiles know where to go in.
+    this.moreBox = el('div', {});
+    main.append(this.moreBox);
+    this.paintMore();
 
     this.modalCount = el('span', { class: 'count' }, this.countsLabel());
 
@@ -779,17 +776,21 @@ export class Panel {
         el('span', { class: 'spacer' }),
         // Repainted, not re-rendered: rebuilding the grid would scroll the
         // user back to the top of a list they were partway through.
-        // Carries its count, because it is now the only way to take a whole
-        // answer at once — filtering stopped doing it, on purpose.
-        el('button', {
+        //
+        // What is on screen, read when it fires — not the whole filtered list.
+        // Ticking something never seen is how a wrong deletion happens, and the
+        // count on the button would be the only clue it had reached further
+        // than the grid. Showing more widens what this takes, which is the
+        // point: the budget is under the user's hand.
+        (this.modalTickAll = el('button', {
           class: 'action',
-          text: `Tick all${this.state.filtered.length ? ` (${nf(this.state.filtered.length)})` : ''}`,
+          text: this.tickAllLabel(),
           disabled: !this.state.filtered.length,
           onclick: () => {
-            this.state.selection = new Set(this.state.filtered.map((i) => i.id));
+            this.state.selection = new Set(this.visibleShown().map((i) => i.id));
             this.paintSelection();
           }
-        }),
+        })),
         el('button', { class: 'action', text: 'Untick all', onclick: () => {
           this.state.selection = new Set();
           this.paintSelection();
@@ -841,6 +842,146 @@ export class Panel {
     this.paintActions();
   }
 
+  /** The photos actually drawn, which is what every whole-grid action takes. */
+  visibleShown() {
+    return this.state.filtered.slice(0, this.state.renderLimit);
+  }
+
+  tickAllLabel() {
+    const n = Math.min(this.state.renderLimit, this.state.filtered.length);
+    return `Tick all${n ? ` (${nf(n)})` : ''}`;
+  }
+
+  /**
+   * Draw further into the list without rebuilding what is already drawn.
+   *
+   * A render would replace every node in the grid, which sends the scroll
+   * position back to the top — of a list the user had just scrolled to the
+   * bottom of in order to press this. The whole point of the button is to
+   * continue, so it appends: new tiles into the grid or the blocks that hold
+   * them, blocks that had been entirely off screen inserted above the buttons,
+   * and the buttons rewritten in place.
+   */
+  showMore(limit) {
+    const total = this.state.filtered.length;
+    const from = Math.min(this.state.renderLimit, total);
+    const to = Math.max(from, Math.min(limit, total));
+    if (to === from) return;
+    this.state.renderLimit = to;
+
+    if (this.flatGrid) {
+      for (let i = from; i < to; i++) {
+        this.flatGrid.append(this.buildThumb(this.state.filtered[i], i));
+      }
+    } else if (this.sectionBlocks) {
+      this.growSections(to);
+    }
+
+    this.paintMore();
+    // The new tiles arrive unmarked, and both counts have just moved.
+    this.paintSelection();
+    this.paintActions();
+  }
+
+  /** Extend the drawn blocks, and add the ones that were entirely off screen. */
+  growSections(to) {
+    let start = 0;
+    this.state.sections.forEach((section, idx) => {
+      const offset = start;
+      start += section.items.length;
+      const count = Math.max(0, Math.min(section.items.length, to - offset));
+      if (!count) return;
+
+      // Blocks are created in order and only ever from the front, so the
+      // records line up with the sections by position — no search.
+      let rec = this.sectionBlocks[idx];
+      if (!rec) {
+        rec = this.buildSectionBlock(section, offset, 0);
+        this.sectionBlocks[idx] = rec;
+        this.moreBox.before(rec.node);
+      }
+      for (let i = rec.ids.length; i < count; i++) {
+        rec.grid.append(this.buildThumb(section.items[i], offset + i));
+        rec.ids.push(section.items[i].id);
+      }
+      rec.note.textContent = this.sectionNote(section, count);
+    });
+  }
+
+  /** What a block's header says about how much of it is on screen. */
+  sectionNote(section, count) {
+    return [
+      section.note,
+      `${nf(section.items.length)} photo(s)`,
+      count < section.items.length ? `${nf(count)} shown` : null
+    ].filter(Boolean).join(' · ');
+  }
+
+  /**
+   * One block, and the handles needed to grow it later.
+   *
+   * `ids` holds what is drawn, not what the block contains, and the tick
+   * button reads it when it fires. A block half on screen ticks its half.
+   */
+  buildSectionBlock(section, offset, count) {
+    const rec = { section, ids: [], grid: el('div', { class: 'grid' }) };
+    for (let i = 0; i < count; i++) {
+      rec.grid.append(this.buildThumb(section.items[i], offset + i));
+      rec.ids.push(section.items[i].id);
+    }
+
+    // The label is filled by paintActions, which also keeps it honest as
+    // individual photos are ticked underneath it. The handler reads the
+    // selection when it fires rather than when it was built, for the same
+    // reason — and reads `rec.ids`, which grows as the block does.
+    rec.button = el('button', {
+      class: 'action',
+      onclick: () => this.toggleSection(rec.ids, !rec.ids.every((id) => this.state.selection.has(id)))
+    });
+    rec.note = el('span', { class: 'muted tiny' }, this.sectionNote(section, count));
+
+    rec.node = el('section', { class: 'group-block' },
+      el('header', {},
+        el('h3', {}, section.title),
+        rec.note,
+        el('span', { class: 'spacer' }),
+        rec.button),
+      rec.grid);
+    return rec;
+  }
+
+  /**
+   * The way past the render budget, rewritten in place.
+   *
+   * Called after every append, because both counts move and the buttons have
+   * to go when nothing is left.
+   */
+  paintMore() {
+    if (this.modalTickAll) this.modalTickAll.textContent = this.tickAllLabel();
+    if (!this.moreBox) return;
+
+    const total = this.state.filtered.length;
+    const drawn = Math.min(this.state.renderLimit, total);
+    const left = total - drawn;
+    if (left <= 0) { this.moreBox.replaceChildren(); return; }
+
+    const box = el('div', {});
+    box.append(el('button', {
+      class: 'action wide', style: 'margin-top:12px',
+      text: `Show more (${nf(left)} left)`,
+      onclick: () => this.showMore(drawn + 600)
+    }));
+    if (left > 600) {
+      box.append(el('button', {
+        class: 'action wide', style: 'margin-top:6px',
+        text: `Show all ${nf(total)}`,
+        title: 'Drawing several thousand tiles at once takes a moment',
+        onclick: () => this.showMore(total)
+      }));
+    }
+    this.moreBox.replaceChildren(...box.childNodes);
+  }
+
   /**
    * The grid, split into blocks.
    *
@@ -855,46 +996,25 @@ export class Panel {
    */
   buildSections(shown) {
     const out = [];
-    // Held so their labels can follow the selection without rebuilding the
-    // grid they sit above.
-    this.sectionButtons = [];
+    // Held, sparse, indexed by the section's position: their labels follow the
+    // selection without rebuilding the grid they sit above, and showing more
+    // grows them in place.
+    this.sectionBlocks = [];
     let start = 0;
 
-    for (const section of this.state.sections) {
+    this.state.sections.forEach((section, idx) => {
       const offset = start;
       start += section.items.length;
 
       // Tiles are addressed by their index into the flat list, and the render
       // limit cuts that list — so a block can be partly or entirely off screen.
       const count = Math.max(0, Math.min(section.items.length, shown.length - offset));
-      if (!count) continue;
+      if (!count) return;
 
-      const ids = section.items.map((i) => i.id);
-      // The label is filled by paintActions, which also keeps it honest as
-      // individual photos are ticked underneath it. The handler reads the
-      // selection when it fires rather than when it was built, for the same
-      // reason.
-      const button = el('button', {
-        class: 'action',
-        onclick: () => this.toggleSection(ids, !ids.every((id) => this.state.selection.has(id)))
-      });
-      this.sectionButtons.push({ ids, button });
-
-      out.push(el('section', { class: 'group-block' },
-        el('header', {},
-          el('h3', {}, section.title),
-          el('span', { class: 'muted tiny' },
-            [section.note, `${nf(section.items.length)} photo(s)`,
-              count < section.items.length ? `${nf(count)} shown` : null]
-              .filter(Boolean).join(' · ')),
-          el('span', { class: 'spacer' }),
-          // Every photo of the person, not merely the ones drawn: the render
-          // limit is a display budget, and a button that silently meant "the
-          // first three hundred" would be the worst kind of wrong here.
-          button),
-        put(el('div', { class: 'grid' }),
-          section.items.slice(0, count).map((item, i) => this.buildThumb(item, offset + i)))));
-    }
+      const rec = this.buildSectionBlock(section, offset, count);
+      this.sectionBlocks[idx] = rec;
+      out.push(rec.node);
+    });
     return out;
   }
 
@@ -3139,7 +3259,11 @@ export class Panel {
       this.viewerTickButton.textContent = on ? '✓ Ticked' : 'Tick this one';
       this.viewerTickButton.className = on ? 'action primary' : 'action';
     }
-    for (const { ids, button } of this.sectionButtons || []) {
+    // Sparse: blocks past the render budget have no record until they are
+    // drawn, so the holes are skipped rather than read through.
+    for (const rec of this.sectionBlocks || []) {
+      if (!rec) continue;
+      const { ids, button } = rec;
       const all = ids.length > 0 && ids.every((id) => this.state.selection.has(id));
       button.textContent = `${all ? 'Untick' : 'Tick'} all ${nf(ids.length)}`;
     }

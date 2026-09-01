@@ -12,7 +12,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { Panel } from '../src/ui/panel.js';
+import { installDom } from './helpers/dom.js';
+
+// Before the panel module is evaluated: `el()` reaches for `document` the
+// moment anything calls it.
+installDom();
+
+const { Panel } = await import('../src/ui/panel.js');
 import { PANEL_CSS } from '../src/ui/styles.js';
 import { DEFAULT_FILTERS } from '../src/common/filters.js';
 
@@ -588,12 +594,19 @@ test('a selection survives a reorder but not a photo leaving the grid', () => {
 
 test('taking a whole answer is a button, and it says how many', () => {
   // The only way to do at once what filtering used to do by itself, so it has
-  // to be findable and it has to state its size.
-  const source = readFileSync(new URL('../src/ui/panel.js', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('Tick all'), source.indexOf('Untick all') + 60);
-  assert.match(block, /nf\(this\.state\.filtered\.length\)/);
-  assert.match(block, /disabled: !this\.state\.filtered\.length/,
+  // to be findable and it has to state its size. What it takes is the grid,
+  // not the list behind it — and the number has to track that as the grid
+  // grows, or the button understates itself.
+  const label = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  tickAllLabel() {'), PANEL_SOURCE.indexOf('  showMore('));
+  assert.match(label, /Math\.min\(this\.state\.renderLimit, this\.state\.filtered\.length\)/);
+  assert.match(label, /Tick all\$\{n \? ` \(\$\{nf\(n\)\}\)` : ''\}/);
+
+  const at = PANEL_SOURCE.indexOf('this.modalTickAll = el(');
+  assert.match(PANEL_SOURCE.slice(at, at + 400), /disabled: !this\.state\.filtered\.length/,
     'and offers nothing when there is nothing to take');
+  assert.match(PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  paintMore() {'), PANEL_SOURCE.indexOf('  paintMore() {') + 300),
+    /this\.modalTickAll\.textContent = this\.tickAllLabel\(\)/,
+    'repainted as the grid grows, never left stale');
 });
 
 /* --------------------------------------------- a magnified image must be caged */
@@ -646,36 +659,227 @@ test('the image inside is positioned and unconstrained', () => {
  * ask for more. Sorted oldest-first that reads as a library which stops after
  * about a month.
  */
+const MORE = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  paintMore() {'), PANEL_SOURCE.indexOf('  /**\n   * The grid, split into blocks.'));
+
 test('the way past the render budget is outside the branch that splits the grid', () => {
   const start = PANEL_SOURCE.indexOf('    } else if (this.state.sections) {');
   const body = PANEL_SOURCE.slice(start, start + 1600);
 
-  // The button must not sit in either arm — both are cut by the same budget.
+  // Neither arm may own it — both are cut by the same budget.
   const flatArm = body.slice(body.indexOf('} else {'), body.indexOf('    // Outside the branch'));
   assert.equal(/Show more/.test(flatArm), false, 'the flat arm must not own it');
-  assert.match(body.slice(body.indexOf('    // Outside the branch')), /Show more \(\$\{nf\(left\)\} left\)/);
+  assert.match(body, /this\.moreBox = el/);
+  assert.match(MORE, /Show more \(\$\{nf\(left\)\} left\)/);
 });
 
 test('what is left is counted against the whole list, not the blocks drawn', () => {
-  const start = PANEL_SOURCE.indexOf('    // Outside the branch');
-  const body = PANEL_SOURCE.slice(start, start + 900);
-  assert.match(body, /this\.state\.filtered\.length > shown\.length/);
-  assert.match(body, /const left = this\.state\.filtered\.length - shown\.length/);
+  assert.match(MORE, /const total = this\.state\.filtered\.length/);
+  assert.match(MORE, /const drawn = Math\.min\(this\.state\.renderLimit, total\)/);
+  assert.match(MORE, /const left = total - drawn/);
 });
 
 test('a long list can be opened in one go rather than six hundred at a time', () => {
   // Four thousand photos is seven presses otherwise, and the count on the
   // button is the only thing telling you the list did not end.
-  const start = PANEL_SOURCE.indexOf('    // Outside the branch');
-  const body = PANEL_SOURCE.slice(start, start + 1800);
-  assert.match(body, /Show all \$\{nf\(this\.state\.filtered\.length\)\}/);
-  assert.match(body, /this\.state\.renderLimit = this\.state\.filtered\.length/);
-  assert.match(body, /left > 600/, 'and it is not offered when it would do nothing');
+  assert.match(MORE, /Show all \$\{nf\(total\)\}/);
+  assert.match(MORE, /this\.showMore\(total\)/);
+  assert.match(MORE, /left > 600/, 'and it is not offered when it would do nothing');
+});
+
+test('the buttons go when there is nothing left behind them', () => {
+  assert.match(MORE, /if \(left <= 0\) \{ this\.moreBox\.replaceChildren\(\); return; \}/);
 });
 
 test('a block says how many of its photos are drawn when not all are', () => {
   // Without it a half-drawn day looks like a day with fewer photos in it.
-  const start = PANEL_SOURCE.indexOf('  buildSections(shown) {');
-  const body = PANEL_SOURCE.slice(start, start + 1800);
+  const body = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  sectionNote(section, count) {'), PANEL_SOURCE.indexOf('  buildSectionBlock('));
   assert.match(body, /count < section\.items\.length \? `\$\{nf\(count\)\} shown`/);
+});
+
+/* ------------------------------------------- showing more continues, not restarts */
+
+/**
+ * Pressing "Show more" is pressing "continue".
+ *
+ * A render replaces every node in the grid, and the scroll position goes with
+ * them — back to the top of a list the user had just scrolled to the bottom of
+ * in order to press the button. This is the fifth bug of that shape in this
+ * file's history, which is why the rule in CLAUDE.md is repaint, never
+ * re-render.
+ */
+const SHOW_MORE = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  showMore(limit) {'), PANEL_SOURCE.indexOf('  growSections(to) {'));
+
+test('showing more appends rather than rendering', () => {
+  assert.equal(/this\.render(Modal|All|Scan)\(\)/.test(SHOW_MORE), false,
+    'a render would send the user back to the top of the list they were reading');
+  assert.match(SHOW_MORE, /this\.flatGrid\.append\(this\.buildThumb/);
+  assert.match(SHOW_MORE, /this\.growSections\(to\)/);
+});
+
+test('the appended tiles pick up where the drawn ones stopped', () => {
+  // Off by one here draws a duplicate row or skips a photo, and neither is
+  // visible in a grid of hundreds.
+  assert.match(SHOW_MORE, /const from = Math\.min\(this\.state\.renderLimit, total\)/);
+  assert.match(SHOW_MORE, /for \(let i = from; i < to; i\+\+\)/);
+});
+
+test('showing more past the end of the list does nothing at all', () => {
+  assert.match(SHOW_MORE, /const to = Math\.max\(from, Math\.min\(limit, total\)\)/);
+  assert.match(SHOW_MORE, /if \(to === from\) return/);
+});
+
+test('the new tiles are marked and the counts move', () => {
+  // They arrive unmarked; a selection made before pressing would look emptied.
+  assert.match(SHOW_MORE, /this\.paintSelection\(\)/);
+  assert.match(SHOW_MORE, /this\.paintActions\(\)/);
+  assert.match(SHOW_MORE, /this\.paintMore\(\)/);
+});
+
+test('a block entirely off screen is inserted above the buttons, not after them', () => {
+  const body = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  growSections(to) {'), PANEL_SOURCE.indexOf('  sectionNote(section, count) {'));
+  assert.match(body, /this\.moreBox\.before\(rec\.node\)/);
+});
+
+test('block records line up with sections by position, without searching', () => {
+  // A find() per section per press is quadratic over a library split by day.
+  const body = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  growSections(to) {'), PANEL_SOURCE.indexOf('  sectionNote(section, count) {'));
+  assert.match(body, /let rec = this\.sectionBlocks\[idx\]/);
+  assert.equal(/\.find\(/.test(body), false);
+});
+
+test('the records are sparse, and reading them says so', () => {
+  // Blocks past the budget have no record until drawn.
+  const body = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('  paintActions() {'), PANEL_SOURCE.indexOf('  paintActions() {') + 1600);
+  assert.match(body, /for \(const rec of this\.sectionBlocks \|\| \[\]\)/);
+  assert.match(body, /if \(!rec\) continue/);
+});
+
+test('a closed modal forgets the nodes it was appending into', () => {
+  // Appending into a detached grid is invisible, and would hide the fact that
+  // it never ran.
+  const body = PANEL_SOURCE.slice(PANEL_SOURCE.indexOf('    if (!this.state.modalOpen) {'), PANEL_SOURCE.indexOf('    const shown = this.state.filtered'));
+  for (const held of ['sectionBlocks', 'flatGrid', 'moreBox', 'modalTickAll']) {
+    assert.match(body, new RegExp(`this\\.${held} = null`), `${held} outlives the modal`);
+  }
+});
+
+/* ------------------------------------------- and the arithmetic, run for real */
+
+/**
+ * The source checks above cannot see an off-by-one, and an off-by-one here
+ * draws a duplicate row or skips a photo — neither of which is visible in a
+ * grid of hundreds. So the append is run against stub nodes.
+ */
+function fakePanel(filtered, { sections = null, limit = 3 } = {}) {
+  const drawn = [];
+  const p = {
+    state: { filtered, sections, renderLimit: limit, selection: new Set() },
+    flatGrid: sections ? null : { append: (t) => drawn.push(t) },
+    sectionBlocks: sections ? [] : null,
+    moreBox: { before: (node) => drawn.push(node) },
+    buildThumb: (item, i) => ({ id: item.id, i }),
+    buildSectionBlock: Panel.prototype.buildSectionBlock,
+    sectionNote: Panel.prototype.sectionNote,
+    growSections: Panel.prototype.growSections,
+    showMore: Panel.prototype.showMore,
+    paintMore() {}, paintSelection() {}, paintActions() {},
+    toggleSection() {}
+  };
+  return { p, drawn };
+}
+
+const items = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, ts: i }));
+
+test('appending continues from the last drawn tile, with no gap and no repeat', () => {
+  const { p, drawn } = fakePanel(items, { limit: 3 });
+  p.showMore(7);
+  assert.deepEqual(drawn.map((t) => t.i), [3, 4, 5, 6]);
+  assert.deepEqual(drawn.map((t) => t.id), ['p3', 'p4', 'p5', 'p6']);
+  assert.equal(p.state.renderLimit, 7);
+});
+
+test('appending twice in a row never redraws what is already there', () => {
+  const { p, drawn } = fakePanel(items, { limit: 2 });
+  p.showMore(5);
+  p.showMore(8);
+  assert.deepEqual(drawn.map((t) => t.i), [2, 3, 4, 5, 6, 7]);
+});
+
+test('asking past the end stops at the end', () => {
+  const { p, drawn } = fakePanel(items, { limit: 8 });
+  p.showMore(9999);
+  assert.deepEqual(drawn.map((t) => t.i), [8, 9]);
+  assert.equal(p.state.renderLimit, 10);
+});
+
+test('asking for less than is drawn changes nothing', () => {
+  const { p, drawn } = fakePanel(items, { limit: 6 });
+  p.showMore(2);
+  assert.deepEqual(drawn, []);
+  assert.equal(p.state.renderLimit, 6, 'and never shrinks the grid under the user');
+});
+
+/* --- the same, split into blocks, where a block can be half drawn --- */
+
+const blocks = [
+  { title: 'day one', items: items.slice(0, 4) },
+  { title: 'day two', items: items.slice(4, 6) },
+  { title: 'day three', items: items.slice(6, 10) }
+];
+
+function sectioned(limit) {
+  const { p } = fakePanel(items, { sections: blocks, limit });
+  // Build what the first render would have built, through the same path.
+  let start = 0;
+  blocks.forEach((section, idx) => {
+    const offset = start;
+    start += section.items.length;
+    const count = Math.max(0, Math.min(section.items.length, limit - offset));
+    if (!count) return;
+    p.sectionBlocks[idx] = p.buildSectionBlock.call(p, section, offset, count);
+  });
+  return p;
+}
+
+test('a half-drawn block is filled in before the next one is started', () => {
+  const p = sectioned(2);                    // day one showing 2 of 4
+  assert.deepEqual(p.sectionBlocks[0].ids, ['p0', 'p1']);
+  assert.equal(p.sectionBlocks[1], undefined);
+
+  p.showMore(5);                             // day one whole, day two started
+  assert.deepEqual(p.sectionBlocks[0].ids, ['p0', 'p1', 'p2', 'p3']);
+  assert.deepEqual(p.sectionBlocks[1].ids, ['p4']);
+  assert.equal(p.sectionBlocks[2], undefined, 'a block past the budget stays undrawn');
+});
+
+test('tile indices stay global across blocks', () => {
+  // They address the flat list — the viewer steps through it with the arrow
+  // keys, and paintSelection reads them back.
+  const p = sectioned(2);
+  const seen = [];
+  p.buildThumb = (item, i) => { seen.push([item.id, i]); return {}; };
+  p.showMore(8);
+  assert.deepEqual(seen, [['p2', 2], ['p3', 3], ['p4', 4], ['p5', 5], ['p6', 6], ['p7', 7]]);
+});
+
+test('a block ticks what it has drawn, and that grows with it', () => {
+  const p = sectioned(2);
+  const rec = p.sectionBlocks[0];
+  let asked = null;
+  p.toggleSection = (ids) => { asked = [...ids]; };
+
+  rec.button.fire('click');
+  assert.deepEqual(asked, ['p0', 'p1'], 'half a block ticks its half');
+
+  p.showMore(10);
+  rec.button.fire('click');
+  assert.deepEqual(asked, ['p0', 'p1', 'p2', 'p3'], 'and the whole of it once whole');
+});
+
+test('a block header stops saying "shown" once all of it is', () => {
+  const p = sectioned(2);
+  assert.match(p.sectionBlocks[0].note.textContent, /2 shown/);
+  p.showMore(10);
+  assert.equal(/shown/.test(p.sectionBlocks[0].note.textContent), false);
+  assert.match(p.sectionBlocks[0].note.textContent, /4 photo\(s\)/);
 });

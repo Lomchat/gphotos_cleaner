@@ -238,7 +238,7 @@ test('a block button follows the selection under it', () => {
   const button = { textContent: '' };
   const p = {
     state: { selection: new Set(['a']), busy: null, byId: new Map() },
-    sectionButtons: [{ ids: ['a', 'b'], button }],
+    sectionBlocks: [{ ids: ['a', 'b'], button }],
     modalTicked: null, modalTickButton: null, modalBinButton: null,
     selectionWeight: Panel.prototype.selectionWeight,
     paintActions: Panel.prototype.paintActions
@@ -251,11 +251,39 @@ test('a block button follows the selection under it', () => {
   assert.equal(button.textContent, 'Untick all 2');
 });
 
-test('tick-all covers the whole block, not the part on screen', () => {
-  const body = SOURCE.slice(SOURCE.indexOf('  buildSections('), SOURCE.indexOf('  toggleSection('));
-  assert.match(body, /const ids = section\.items\.map/,
-    'the ids must come from the section, never from the rendered slice');
-  assert.match(body, /shown/, 'while only the drawn part is built');
+test('tick-all covers what is drawn, and only that', () => {
+  // The reverse of what this file used to hold, and deliberately.
+  //
+  // The old rule was that a block button took every photo of the person, on
+  // the grounds that a button silently meaning "the first three hundred" would
+  // be the worst kind of wrong. That was true while nothing could raise the
+  // budget in a grouped view — the user could not have seen the rest even in
+  // principle. Now that showing more works there, and appends, what is drawn
+  // is what the user chose to draw. Ticking beyond it means ticking photos
+  // never looked at, which is how a wrong deletion happens.
+  const body = SOURCE.slice(SOURCE.indexOf('  buildSectionBlock('), SOURCE.indexOf('  paintMore()'));
+  assert.match(body, /rec\.ids\.push\(section\.items\[i\]\.id\)/,
+    'ids accumulate as tiles are drawn');
+  assert.equal(/const ids = section\.items\.map/.test(body), false,
+    'never the whole block regardless of what is on screen');
+  assert.match(body, /this\.toggleSection\(rec\.ids/,
+    'and the handler reads them when it fires, since the block can grow');
+});
+
+test('a block that grows ticks its new photos too', () => {
+  const body = SOURCE.slice(SOURCE.indexOf('  growSections('), SOURCE.indexOf('  sectionNote('));
+  assert.match(body, /for \(let i = rec\.ids\.length; i < count; i\+\+\)/,
+    'appending resumes from what is already drawn');
+  assert.match(body, /rec\.ids\.push/);
+});
+
+test('the whole-grid tick takes what is on screen, read when it fires', () => {
+  const at = SOURCE.indexOf('this.modalTickAll = el(');
+  assert.notEqual(at, -1);
+  const body = SOURCE.slice(at, at + 700);
+  assert.match(body, /new Set\(this\.visibleShown\(\)\.map/);
+  assert.equal(/new Set\(this\.state\.filtered\.map/.test(body), false,
+    'the filtered list reaches past the grid');
 });
 
 /* ------------------------------------------------------ blocks by day */
